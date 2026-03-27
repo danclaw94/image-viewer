@@ -21,7 +21,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.5.2 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.5.3 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1835,7 +1835,7 @@ function App() {
       flexWrap: 'wrap',
       alignItems: 'center'
     }
-  }, [['all', 'All', P.dim, gridRows.length], ['responsive', 'R', P.green, rCnt], ['not_responsive', 'NR', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
+  }, [['all', 'All', P.dim, gridRows.length], ['responsive', 'Responsive', P.green, rCnt], ['not_responsive', 'Not Responsive', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
     const isActive = tagFilter === f;
     return /*#__PURE__*/React.createElement("button", {
       key: f,

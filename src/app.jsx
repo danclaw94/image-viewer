@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.2 · 2026-03-27';
+const APP_VERSION = 'v1.5.3 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1017,7 +1017,7 @@ function App() {
         <div style={{ width: GRID_W, transition: 'width 0.12s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? '1px solid ' + P.border : 'none' }}>
           {/* Tag filter bar — matches PST style */}
           <div style={{ display: 'flex', gap: 4, padding: '4px 8px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface, flexWrap: 'wrap', alignItems: 'center' }}>
-            {[['all', 'All', P.dim, gridRows.length], ['responsive', 'R', P.green, rCnt], ['not_responsive', 'NR', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
+            {[['all', 'All', P.dim, gridRows.length], ['responsive', 'Responsive', P.green, rCnt], ['not_responsive', 'Not Responsive', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
               const isActive = tagFilter === f;
               return (
                 <button key={f} onClick={() => setTagFilter(f)} style={{
