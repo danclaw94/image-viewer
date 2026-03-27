@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.6.2 · 2026-03-27';
+const APP_VERSION = 'v1.7.0 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -564,8 +564,12 @@ function App() {
   // Tagging
   const [tagMap,       setTagMap]       = React.useState(new Map());
   const [tagFilter,    setTagFilter]    = React.useState('all');
-  const [showExportDat,setShowExportDat]= React.useState(false);
-  const [exportColName,setExportColName]= React.useState('Responsiveness');
+  const [showExportDat,  setShowExportDat]   = React.useState(false);
+  const [exportMode,     setExportMode]      = React.useState('dat');       // 'dat' | 'production'
+  const [exportColName,  setExportColName]   = React.useState('Responsiveness');
+  const [exportTags,     setExportTags]      = React.useState(new Set(['responsive', 'not_responsive']));
+  const [exportProdName, setExportProdName]  = React.useState('');
+  const [exportProgress, setExportProgress] = React.useState(null); // null | {phase, done, total}
 
   // UI state
   const [copied,       setCopied]       = React.useState(false);
@@ -1251,6 +1255,159 @@ function App() {
     showNotice('ok', 'DAT exported (' + tagMap.size + ' tagged docs)');
   }, [headers, allRows, docs, tagMap, exportColName, optFile, datEncoding, showNotice]);
 
+  // ── Export Production (OPT + DAT + Images + QC report to folder) ──
+  const exportProduction = React.useCallback(async () => {
+    const name = exportProdName.trim();
+    if (!name) { showNotice('warn', 'Enter a production name first'); return; }
+
+    // Filter docs to selected tags
+    const selectedRows = gridRows.filter(r => exportTags.has(tagMap.get(r.docId)));
+    if (selectedRows.length === 0) { showNotice('warn', 'No tagged documents match the selected tags'); return; }
+
+    setShowExportDat(false);
+
+    // Ask user to pick output folder
+    let outDir;
+    try {
+      outDir = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
+    } catch (e) {
+      if (e.name !== 'AbortError') showNotice('err', 'Could not open output folder: ' + e.message);
+      return;
+    }
+
+    setExportProgress({ phase: 'Building file list…', done: 0, total: 0 });
+
+    try {
+      // Build page list
+      const allPages = [];
+      for (const row of selectedRows) {
+        for (let pi = 0; pi < row.pages.length; pi++) {
+          allPages.push({ docId: row.docId, path: row.pages[pi], page: pi, isFirst: pi === 0 });
+        }
+      }
+
+      // Create images subfolder
+      const imgFolderName = name + '_IMAGES';
+      const imgDir2 = await outDir.getDirectoryHandle(imgFolderName, { create: true });
+
+      // Copy images
+      const missingImages = [];
+      setExportProgress({ phase: 'Copying images…', done: 0, total: allPages.length });
+      for (let i = 0; i < allPages.length; i++) {
+        const p = allPages[i];
+        const norm = normPath(p.path);
+        const filename = norm.split('/').pop();
+        const handle = fileIndex[norm] || fileIndex[filename];
+        if (!handle) { missingImages.push(p); setExportProgress({ phase: 'Copying images…', done: i + 1, total: allPages.length }); continue; }
+
+        try {
+          const srcFile = await handle.getFile();
+          const outHandle = await imgDir2.getFileHandle(filename, { create: true });
+          const writable = await outHandle.createWritable();
+          await writable.write(await srcFile.arrayBuffer());
+          await writable.close();
+        } catch (e2) {
+          missingImages.push({ ...p, copyError: e2.message });
+        }
+        setExportProgress({ phase: 'Copying images…', done: i + 1, total: allPages.length });
+      }
+
+      // Build new OPT
+      setExportProgress({ phase: 'Writing OPT…', done: 0, total: 1 });
+      let optLines = '';
+      for (let i = 0; i < allPages.length; i++) {
+        const p = allPages[i];
+        const filename = normPath(p.path).split('/').pop();
+        const newPath = '.' + '\\' + imgFolderName + '\\' + filename;
+        const isFirst = p.isFirst ? 'Y' : '';
+        optLines += p.docId + ',,' + newPath + ',' + isFirst + ',,' + (p.isFirst ? selectedRows.find(r => r.docId === p.docId)?.pages.length || 1 : '') + '\n';
+      }
+      const optHandle = await outDir.getFileHandle(name + '.opt', { create: true });
+      const optWritable = await optHandle.createWritable();
+      await optWritable.write(new Blob([optLines], { type: 'text/plain' }));
+      await optWritable.close();
+
+      // Build new DAT
+      setExportProgress({ phase: 'Writing DAT…', done: 0, total: 1 });
+      let datOutput = '';
+      const tagLabel = id => { const t = tagMap.get(id); return t === 'responsive' ? 'Responsive' : t === 'not_responsive' ? 'Not Responsive' : ''; };
+      if (headers.length > 0 && allRows.length > 0) {
+        const datMap2 = {};
+        for (const row of allRows) { const id = row.fields[0]; if (id) datMap2[id.trim()] = row.fields; }
+        const newHdrs = [...headers, exportColName.trim() || 'Responsiveness'];
+        datOutput += QUOTE + newHdrs.join(QUOTE + DELIM + QUOTE) + QUOTE + '\n';
+        for (const row of selectedRows) {
+          const fields = datMap2[row.docId] || [row.docId];
+          datOutput += QUOTE + [...fields, tagLabel(row.docId)].join(QUOTE + DELIM + QUOTE) + QUOTE + '\n';
+        }
+      } else {
+        datOutput += QUOTE + 'DOCID' + QUOTE + DELIM + QUOTE + (exportColName.trim() || 'Responsiveness') + QUOTE + '\n';
+        for (const row of selectedRows) {
+          datOutput += QUOTE + row.docId + QUOTE + DELIM + QUOTE + tagLabel(row.docId) + QUOTE + '\n';
+        }
+      }
+      // Encode with original DAT encoding
+      let datBlob;
+      if (datEncoding === 'utf-16le') {
+        const buf = new ArrayBuffer(datOutput.length * 2 + 2); const v = new DataView(buf);
+        v.setUint8(0, 0xFF); v.setUint8(1, 0xFE);
+        for (let i = 0; i < datOutput.length; i++) v.setUint16(2 + i * 2, datOutput.charCodeAt(i), true);
+        datBlob = new Blob([buf], { type: 'application/octet-stream' });
+      } else {
+        datBlob = new Blob([datOutput], { type: 'text/plain' });
+      }
+      const datHandle2 = await outDir.getFileHandle(name + '.dat', { create: true });
+      const datWritable = await datHandle2.createWritable();
+      await datWritable.write(datBlob);
+      await datWritable.close();
+
+      // QC check + report
+      setExportProgress({ phase: 'Writing QC report…', done: 0, total: 1 });
+      const expectedDocs   = selectedRows.length;
+      const expectedImages = allPages.length;
+      const exportedImages = expectedImages - missingImages.length;
+      const datRows        = selectedRows.length;
+
+      let qcText = '=== vDiscovery Image Viewer — Production Export QC Report ===\n';
+      qcText += 'Production: ' + name + '\n';
+      qcText += 'Generated:  ' + new Date().toLocaleString() + '\n';
+      qcText += 'Source OPT: ' + (optFile || 'N/A') + '\n';
+      qcText += 'Source DAT: ' + (datFile || 'N/A') + '\n\n';
+      qcText += '--- Summary ---\n';
+      qcText += 'Documents exported:        ' + expectedDocs + '\n';
+      qcText += 'Total image pages:         ' + expectedImages + '\n';
+      qcText += 'Images successfully copied: ' + exportedImages + '\n';
+      qcText += 'Missing / failed images:   ' + missingImages.length + '\n';
+      qcText += 'DAT rows (excl. header):   ' + datRows + '\n';
+      qcText += 'OPT rows:                  ' + allPages.length + '\n';
+      qcText += 'Row count match (DAT=docs): ' + (datRows === expectedDocs ? 'PASS ✓' : 'FAIL ✗') + '\n';
+      qcText += 'All images present:         ' + (missingImages.length === 0 ? 'PASS ✓' : 'FAIL ✗ — ' + missingImages.length + ' missing') + '\n';
+      qcText += '\n--- Output Files ---\n';
+      qcText += name + '.opt  (' + allPages.length + ' rows)\n';
+      qcText += name + '.dat  (' + datRows + ' rows + 1 header)\n';
+      qcText += imgFolderName + '/  (' + exportedImages + ' images)\n';
+      if (missingImages.length > 0) {
+        qcText += '\n--- Missing Images (' + missingImages.length + ') ---\n';
+        for (const m of missingImages) {
+          qcText += m.docId + '  p.' + (m.page + 1) + '  ' + m.path + (m.copyError ? '  [ERROR: ' + m.copyError + ']' : '') + '\n';
+        }
+      }
+
+      const qcHandle = await outDir.getFileHandle(name + '_QC_REPORT.txt', { create: true });
+      const qcWritable = await qcHandle.createWritable();
+      await qcWritable.write(new Blob([qcText], { type: 'text/plain' }));
+      await qcWritable.close();
+
+      setExportProgress(null);
+      const status = missingImages.length === 0 ? 'ok' : 'warn';
+      showNotice(status, (status === 'ok' ? '✓ Production exported — ' : '⚠ Exported with ' + missingImages.length + ' missing images — ') + expectedDocs + ' docs, ' + exportedImages + ' images', 8000);
+
+    } catch (e) {
+      setExportProgress(null);
+      showNotice('err', 'Export failed: ' + e.message, 8000);
+    }
+  }, [exportProdName, exportTags, gridRows, tagMap, fileIndex, headers, allRows, docs, optFile, datFile, datEncoding, exportColName, showNotice]);
+
   // ── Save/Load session JSON ──
   const saveSession = React.useCallback(() => {
     const data = { version: '1.5.0', tags: Object.fromEntries(tagMap), optFile, datFile, timestamp: new Date().toISOString(), hiddenCols: [...hiddenCols], colWidths };
@@ -1708,24 +1865,118 @@ function App() {
         </div>
       )}
 
-      {/* ── Export DAT Modal ── */}
+      {/* ── Export Modal ── */}
       {showExportDat && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
           onClick={e => { if (e.target === e.currentTarget) setShowExportDat(false); }}>
-          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 10, padding: 24, width: 400 }}>
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: P.text }}>Export Tagged DAT</div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Tag Column Name</label>
-              <input value={exportColName} onChange={e => setExportColName(e.target.value)}
-                style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 12, padding: 24, width: 480, maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: P.text }}>Export</div>
+
+            {/* Mode tabs */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: P.bg, borderRadius: 6, padding: 3 }}>
+              {[['dat', '📋 Tag column only'], ['production', '📦 Full production export']].map(([mode, label]) => (
+                <button key={mode} onClick={() => setExportMode(mode)} style={{
+                  flex: 1, padding: '7px 0', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  background: exportMode === mode ? P.accent : 'transparent',
+                  color: exportMode === mode ? '#fff' : P.dim,
+                }}>{label}</button>
+              ))}
             </div>
-            <div style={{ fontSize: 11, color: P.dim, fontFamily: mono, marginBottom: 16 }}>
-              {tagMap.size} tagged · {rCnt} Responsive · {nrCnt} Not Responsive
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setShowExportDat(false)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Cancel</button>
-              <button onClick={() => { exportTaggedDat(); setShowExportDat(false); }} style={{ background: P.accent, border: 'none', color: '#fff', padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Export →</button>
-            </div>
+
+            {exportMode === 'dat' && (
+              <>
+                <div style={{ fontSize: 12, color: P.dim, marginBottom: 16, lineHeight: 1.5 }}>
+                  Appends a tag column to the existing DAT and downloads it. No images are exported.
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Tag Column Name</label>
+                  <input value={exportColName} onChange={e => setExportColName(e.target.value)}
+                    style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ fontSize: 11, color: P.dim, fontFamily: mono, marginBottom: 16 }}>
+                  {tagMap.size} tagged · {rCnt} Responsive · {nrCnt} Not Responsive
+                </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={() => setShowExportDat(false)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+                  <button onClick={() => { exportTaggedDat(); setShowExportDat(false); }} style={{ background: P.accent, border: 'none', color: '#fff', padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Export DAT →</button>
+                </div>
+              </>
+            )}
+
+            {exportMode === 'production' && (
+              <>
+                <div style={{ fontSize: 12, color: P.dim, marginBottom: 16, lineHeight: 1.5 }}>
+                  Exports selected tagged documents as a complete production: OPT, DAT, images folder, and a QC report — all written to a folder you choose.
+                </div>
+
+                {/* Production name */}
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Production Name <span style={{ color: P.red }}>*</span></label>
+                  <input value={exportProdName} onChange={e => setExportProdName(e.target.value)}
+                    placeholder="e.g. PROD001"
+                    style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                  <div style={{ fontSize: 10, color: P.dim, marginTop: 3 }}>
+                    Creates: {exportProdName || 'NAME'}.opt · {exportProdName || 'NAME'}.dat · {exportProdName || 'NAME'}_IMAGES/ · {exportProdName || 'NAME'}_QC_REPORT.txt
+                  </div>
+                </div>
+
+                {/* Tag selection */}
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 6, fontFamily: mono }}>Include tagged as</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {[['responsive', 'Responsive', P.green, P.greenGlow, rCnt], ['not_responsive', 'Not Responsive', P.red, P.redGlow, nrCnt]].map(([key, label, color, glow, count]) => {
+                      const active = exportTags.has(key);
+                      return (
+                        <button key={key} onClick={() => setExportTags(prev => { const n = new Set(prev); active ? n.delete(key) : n.add(key); return n; })}
+                          style={{ flex: 1, padding: '8px 0', borderRadius: 6, border: '2px solid ' + (active ? color : P.border), background: active ? glow : 'transparent', color: active ? color : P.dim, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                          {active ? '✓ ' : ''}{label} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: P.dim, marginTop: 6, fontFamily: mono }}>
+                    {gridRows.filter(r => exportTags.has(tagMap.get(r.docId))).length.toLocaleString()} documents · {gridRows.filter(r => exportTags.has(tagMap.get(r.docId))).reduce((s, r) => s + r.pages.length, 0).toLocaleString()} images
+                  </div>
+                </div>
+
+                {/* Tag column name */}
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Tag Column Name</label>
+                  <input value={exportColName} onChange={e => setExportColName(e.target.value)}
+                    style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                </div>
+
+                <div style={{ fontSize: 11, color: P.dim, background: P.bg, borderRadius: 6, padding: '8px 12px', marginBottom: 16 }}>
+                  📁 You will be prompted to choose an output folder after clicking Export.
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={() => setShowExportDat(false)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+                  <button onClick={exportProduction} disabled={!exportProdName.trim() || exportTags.size === 0}
+                    style={{ background: exportProdName.trim() && exportTags.size > 0 ? P.accent : P.border, border: 'none', color: exportProdName.trim() && exportTags.size > 0 ? '#fff' : P.dim, padding: '6px 20px', borderRadius: 6, cursor: exportProdName.trim() && exportTags.size > 0 ? 'pointer' : 'not-allowed', fontSize: 12, fontWeight: 600 }}>
+                    Choose Folder & Export →
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Export progress overlay ── */}
+      {exportProgress && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2100 }}>
+          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 10, padding: '28px 36px', textAlign: 'center', minWidth: 320 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: P.text, marginBottom: 12 }}>Exporting Production…</div>
+            <div style={{ fontFamily: mono, fontSize: 12, color: P.accent, marginBottom: 14 }}>{exportProgress.phase}</div>
+            {exportProgress.total > 0 && (
+              <>
+                <div style={{ background: P.bg, borderRadius: 4, height: 6, marginBottom: 8, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: P.accent, borderRadius: 4, width: Math.round((exportProgress.done / exportProgress.total) * 100) + '%', transition: 'width 0.1s' }} />
+                </div>
+                <div style={{ fontFamily: mono, fontSize: 11, color: P.dim }}>{exportProgress.done.toLocaleString()} / {exportProgress.total.toLocaleString()}</div>
+              </>
+            )}
           </div>
         </div>
       )}
