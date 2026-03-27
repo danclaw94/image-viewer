@@ -19,19 +19,18 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.2.0 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.3.0 · 2026-03-27';
 
 // ── OPT parser ──────────────────────────────────────────────────────────────
-// Format: DOCID,VOLUME,.\PATH\TO\FILE.TIF,Y,,PAGECOUNT
 function parseOpt(text) {
   const lines = text.split('\n').map(l => l.replace(/[\r]+$/, '')).filter(l => l.trim());
   const pages = [];
   for (const line of lines) {
     const cols = line.split(',');
     if (cols.length < 3) continue;
-    const docId = cols[0]?.trim();
-    const imgPath = cols[2]?.trim();
-    const isFirst = cols[3]?.trim().toUpperCase() === 'Y';
+    const docId = cols[0].trim();
+    const imgPath = cols[2].trim();
+    const isFirst = cols[3] && cols[3].trim().toUpperCase() === 'Y';
     if (!docId || !imgPath) continue;
     pages.push({
       docId,
@@ -39,7 +38,6 @@ function parseOpt(text) {
       isFirst
     });
   }
-  // Group into documents
   const docs = [];
   let current = null;
   for (const p of pages) {
@@ -56,11 +54,11 @@ function parseOpt(text) {
   return docs;
 }
 
-// ── DAT parser (same as dat-tool) ────────────────────────────────────────────
-const DELIMITER = "\x14";
-const QUOTE = "\xFE";
+// ── DAT parser ───────────────────────────────────────────────────────────────
+const DELIM = "\x14",
+  QUOTE = "\xFE";
 function parseRow(line) {
-  const sep = QUOTE + DELIMITER + QUOTE;
+  const sep = QUOTE + DELIM + QUOTE;
   let t = line.replace(/[\r\n]+$/, '');
   if (t.startsWith(QUOTE)) t = t.slice(1);
   if (t.endsWith(QUOTE)) t = t.slice(0, -1);
@@ -70,12 +68,8 @@ function detectEncoding(buffer) {
   const b = new Uint8Array(buffer.slice(0, 4));
   if (b[0] === 0xFF && b[1] === 0xFE) return 'utf-16le';
   if (b[0] === 0xFE && b[1] === 0xFF) return 'utf-16be';
-  if (b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) return 'utf-8';
   return 'utf-8';
 }
-
-// ── Normalise OPT image path for filesystem lookup ────────────────────────────
-// Strips leading .\ or ./ and normalises slashes
 function normPath(p) {
   return p.replace(/^\.[\\/]/, '').replace(/\\/g, '/').toLowerCase();
 }
@@ -93,50 +87,48 @@ const P = {
   green: '#3FB950',
   orange: '#D29922',
   red: '#F85149',
-  tag: '#21262D'
+  tag: '#21262D',
+  rowSel: 'rgba(88,166,255,0.18)',
+  rowHov: '#1C2129'
 };
 const mono = "'JetBrains Mono','Fira Code','SF Mono',monospace";
 const sans = "'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif";
 
-// ── Main App ─────────────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
 function App() {
-  // Files
   const [optFile, setOptFile] = React.useState(null);
   const [datFile, setDatFile] = React.useState(null);
-  const [imgDir, setImgDir] = React.useState(null); // FileSystemDirectoryHandle
+  const [imgDir, setImgDir] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
-  const [launched, setLaunched] = React.useState(false); // true = leave landing screen
+  const [launched, setLaunched] = React.useState(false);
 
-  // Parsed data
-  const [docs, setDocs] = React.useState([]); // [{docId, pages:[path]}]
-  const [meta, setMeta] = React.useState({}); // {docId: {col:val}}
-  const [metaCols, setMetaCols] = React.useState([]); // column names for display
-  const [fileIndex, setFileIndex] = React.useState({}); // {normPath: FileHandle}
+  // Parsed
+  const [docs, setDocs] = React.useState([]);
+  const [allRows, setAllRows] = React.useState([]); // flat array: {docId, fields:[]}
+  const [headers, setHeaders] = React.useState([]);
+  const [fileIndex, setFileIndex] = React.useState({});
 
-  // View state
-  const [selDoc, setSelDoc] = React.useState(null); // index into docs
+  // View
+  const [selDocId, setSelDocId] = React.useState(null);
   const [selPage, setSelPage] = React.useState(0);
   const [imgSrc, setImgSrc] = React.useState(null);
   const [imgLoading, setImgLoading] = React.useState(false);
   const [search, setSearch] = React.useState('');
-  // zoom: number = explicit scale factor, or 'fit-page' / 'fit-width'
   const [zoom, setZoom] = React.useState('fit-page');
-  const imgAreaRef = React.useRef(null);
-  const imgElRef = React.useRef(null);
-  const optRef = React.useRef();
-  const datRef = React.useRef();
+  const [sortCol, setSortCol] = React.useState(null);
+  const [sortDir, setSortDir] = React.useState(1);
+  const [hovRow, setHovRow] = React.useState(null);
   const prevUrl = React.useRef(null);
+  const imgAreaRef = React.useRef(null);
 
   // ── Load OPT ──
   const loadOpt = async file => {
     const buf = await file.arrayBuffer();
-    const enc = detectEncoding(buf);
-    const text = new TextDecoder(enc).decode(buf);
-    const parsed = parseOpt(text);
-    setDocs(parsed);
+    const text = new TextDecoder(detectEncoding(buf)).decode(buf);
+    setDocs(parseOpt(text));
     setOptFile(file.name);
-    setSelDoc(null);
+    setSelDocId(null);
     setSelPage(0);
     setImgSrc(null);
   };
@@ -144,45 +136,19 @@ function App() {
   // ── Load DAT ──
   const loadDat = async file => {
     const buf = await file.arrayBuffer();
-    const enc = detectEncoding(buf);
-    const text = new TextDecoder(enc).decode(buf);
+    const text = new TextDecoder(detectEncoding(buf)).decode(buf);
     const lines = text.split('\n').map(l => l.replace(/[\r]+$/, '')).filter(l => l.trim());
-    if (lines.length < 1) return;
-    const headers = parseRow(lines[0]);
-    // Pick useful columns to display (up to 6)
-    const SHOW_COLS = ['DOCID', 'BEGDOC', 'ENDDOC', 'CUSTODIAN', 'FROM', 'TO', 'DATE', 'SUBJECT', 'DOCTYPE'];
-    const colMap = {};
-    headers.forEach((h, i) => {
-      colMap[h.toUpperCase()] = i;
-    });
-    const displayCols = SHOW_COLS.filter(c => colMap[c] !== undefined).slice(0, 6);
-    if (displayCols.length === 0) {
-      // fallback: first 6 cols
-      headers.slice(0, 6).forEach(h => displayCols.push(h.toUpperCase()));
-    }
-    setMetaCols(displayCols.map(c => ({
-      key: c,
-      idx: colMap[c]
-    })));
-    // First col is assumed to be the docId key — find DOCID or BEGDOC or col 0
-    const idIdx = colMap['DOCID'] ?? colMap['BEGDOC'] ?? 0;
-    const metaMap = {};
-    for (const line of lines.slice(1)) {
-      const row = parseRow(line);
-      const id = row[idIdx]?.trim();
-      if (id) {
-        const obj = {};
-        headers.forEach((h, i) => {
-          obj[h.toUpperCase()] = row[i] ?? '';
-        });
-        metaMap[id] = obj;
-      }
-    }
-    setMeta(metaMap);
+    if (!lines.length) return;
+    const hdrs = parseRow(lines[0]);
+    setHeaders(hdrs);
+    const rows = lines.slice(1).map(l => ({
+      fields: parseRow(l)
+    }));
+    setAllRows(rows);
     setDatFile(file.name);
   };
 
-  // ── Index image directory ──
+  // ── Index image dir ──
   const indexDir = async dirHandle => {
     setLoading(true);
     const idx = {};
@@ -191,11 +157,8 @@ function App() {
         const path = prefix ? prefix + '/' + name : name;
         if (entry.kind === 'file') {
           idx[path.toLowerCase()] = entry;
-          // Also index by filename only for loose matching
           idx[name.toLowerCase()] = entry;
-        } else {
-          await walk(entry, path);
-        }
+        } else await walk(entry, path);
       }
     }
     await walk(dirHandle, '');
@@ -204,46 +167,76 @@ function App() {
     setLoading(false);
   };
 
-  // ── Resolve image file from OPT path ──
+  // ── Resolve image ──
   const resolveImage = async optPath => {
     const norm = normPath(optPath);
-    // Try full normalised path first, then filename only
     const filename = norm.split('/').pop();
     const handle = fileIndex[norm] || fileIndex[filename];
-    if (!handle) return null;
-    return handle.getFile();
+    return handle ? handle.getFile() : null;
   };
 
-  // ── Load image for current selection ──
+  // ── Merge docs + DAT rows → grid rows ──
+  const gridRows = React.useMemo(() => {
+    if (!docs.length) return [];
+    // Build docId → dat row map using first column as key
+    const datMap = {};
+    if (allRows.length && headers.length) {
+      for (const row of allRows) {
+        const id = row.fields[0];
+        if (id) datMap[id.trim()] = row.fields;
+      }
+    }
+    return docs.map(doc => ({
+      docId: doc.docId,
+      pages: doc.pages,
+      fields: datMap[doc.docId] || []
+    }));
+  }, [docs, allRows, headers]);
+
+  // ── Filtered + sorted rows ──
+  const filteredRows = React.useMemo(() => {
+    let rows = gridRows;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      rows = rows.filter(r => r.docId.toLowerCase().includes(q) || r.fields.some(f => f.toLowerCase().includes(q)));
+    }
+    if (sortCol !== null) {
+      rows = [...rows].sort((a, b) => {
+        const av = (sortCol === -1 ? a.docId : a.fields[sortCol]) || '';
+        const bv = (sortCol === -1 ? b.docId : b.fields[sortCol]) || '';
+        return av.localeCompare(bv) * sortDir;
+      });
+    }
+    return rows;
+  }, [gridRows, search, sortCol, sortDir]);
+
+  // ── Selected row ──
+  const selRow = selDocId ? filteredRows.find(r => r.docId === selDocId) : null;
+  const totalPages = selRow ? selRow.pages.length : 0;
+
+  // ── Load image ──
   React.useEffect(() => {
-    if (selDoc === null || !docs[selDoc]) {
+    if (!selRow || !Object.keys(fileIndex).length) {
       setImgSrc(null);
       return;
     }
-    const pages = docs[selDoc].pages;
-    const path = pages[selPage];
+    const path = selRow.pages[selPage];
     if (!path) {
-      setImgSrc(null);
-      return;
-    }
-    if (Object.keys(fileIndex).length === 0) {
       setImgSrc(null);
       return;
     }
     let cancelled = false;
     setImgLoading(true);
     setImgSrc(null);
+    setError(null);
     resolveImage(path).then(async file => {
-      if (cancelled) return;
-      if (!file) {
+      if (cancelled || !file) {
         setImgLoading(false);
-        setError('Image not found: ' + path);
+        if (!cancelled) setError('Not found: ' + path);
         return;
       }
-      setError(null);
       const name = file.name.toLowerCase();
       if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-        // Decode TIFF via UTIF
         const buf = await file.arrayBuffer();
         const ifds = UTIF.decode(buf);
         UTIF.decodeImage(buf, ifds[0]);
@@ -254,9 +247,9 @@ function App() {
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
-        const idata = ctx.createImageData(w, h);
-        idata.data.set(rgba);
-        ctx.putImageData(idata, 0, 0);
+        const id = ctx.createImageData(w, h);
+        id.data.set(rgba);
+        ctx.putImageData(id, 0, 0);
         if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
         canvas.toBlob(blob => {
           if (cancelled) return;
@@ -266,7 +259,6 @@ function App() {
           setImgLoading(false);
         });
       } else {
-        // Native browser format (JPG, PNG, PDF)
         if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
         const url = URL.createObjectURL(file);
         prevUrl.current = url;
@@ -282,46 +274,54 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [selDoc, selPage, fileIndex, docs]);
+  }, [selDocId, selPage, fileIndex]);
 
   // ── Keyboard nav ──
   React.useEffect(() => {
+    if (!selDocId) return;
     const handler = e => {
-      if (selDoc === null) return;
-      const pages = docs[selDoc]?.pages || [];
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-        if (selPage < pages.length - 1) {
-          setSelPage(p => p + 1);
-        } else if (selDoc < filteredDocs.length - 1) {
-          setSelDoc(d => d + 1);
+      const idx = filteredRows.findIndex(r => r.docId === selDocId);
+      if (e.key === 'ArrowDown') {
+        if (selPage < totalPages - 1) setSelPage(p => p + 1);else if (idx < filteredRows.length - 1) {
+          setSelDocId(filteredRows[idx + 1].docId);
           setSelPage(0);
         }
       }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-        if (selPage > 0) {
-          setSelPage(p => p - 1);
-        } else if (selDoc > 0) {
-          setSelDoc(d => d - 1);
+      if (e.key === 'ArrowUp') {
+        if (selPage > 0) setSelPage(p => p - 1);else if (idx > 0) {
+          setSelDocId(filteredRows[idx - 1].docId);
           setSelPage(0);
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selDoc, selPage, docs]);
-  const filteredDocs = React.useMemo(() => {
-    if (!search.trim()) return docs;
-    const q = search.toLowerCase();
-    return docs.filter(d => {
-      if (d.docId.toLowerCase().includes(q)) return true;
-      const m = meta[d.docId];
-      if (!m) return false;
-      return Object.values(m).some(v => v.toLowerCase().includes(q));
-    });
-  }, [docs, meta, search]);
+  }, [selDocId, selPage, filteredRows, totalPages]);
 
-  // ── Landing screen ──
+  // ── Sort toggle ──
+  const toggleSort = colIdx => {
+    if (sortCol === colIdx) setSortDir(d => -d);else {
+      setSortCol(colIdx);
+      setSortDir(1);
+    }
+  };
+  const reset = () => {
+    setDocs([]);
+    setAllRows([]);
+    setHeaders([]);
+    setFileIndex({});
+    setOptFile(null);
+    setDatFile(null);
+    setImgDir(null);
+    setSelDocId(null);
+    setImgSrc(null);
+    setError(null);
+    setLaunched(false);
+  };
+
+  // ── Landing ──────────────────────────────────────────────────────────────
   if (!launched) {
+    const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
     return /*#__PURE__*/React.createElement("div", {
       style: {
         minHeight: '100vh',
@@ -354,11 +354,6 @@ function App() {
       }
     }, "Image Viewer"), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 13,
-        color: P.dim
-      }
-    }, "Load an OPT file to begin"), /*#__PURE__*/React.createElement("div", {
-      style: {
         display: 'flex',
         gap: 16,
         flexWrap: 'wrap',
@@ -379,7 +374,7 @@ function App() {
       accept: ".opt,.OPT,.txt"
     }), /*#__PURE__*/React.createElement(FileCard, {
       label: "DAT File",
-      hint: "Optional \u2014 adds metadata",
+      hint: "Optional \u2014 metadata grid",
       color: P.green,
       loaded: datFile,
       onSelect: async f => {
@@ -392,7 +387,7 @@ function App() {
       accept: ".dat,.DAT,.txt"
     }), /*#__PURE__*/React.createElement(DirCard, {
       label: "Image Folder",
-      hint: "Required \u2014 select root image folder",
+      hint: "Required",
       loaded: imgDir,
       loading: loading,
       onSelect: async () => {
@@ -406,7 +401,7 @@ function App() {
         }
       }
     })), /*#__PURE__*/React.createElement("button", {
-      disabled: docs.length === 0 || Object.keys(fileIndex).length === 0,
+      disabled: !canLaunch,
       onClick: () => setLaunched(true),
       style: {
         padding: '12px 40px',
@@ -414,10 +409,9 @@ function App() {
         border: 'none',
         fontSize: 15,
         fontWeight: 700,
-        cursor: docs.length > 0 && Object.keys(fileIndex).length > 0 ? 'pointer' : 'not-allowed',
-        background: docs.length > 0 && Object.keys(fileIndex).length > 0 ? P.accent : P.border,
-        color: docs.length > 0 && Object.keys(fileIndex).length > 0 ? '#fff' : P.dim,
-        transition: 'background 0.2s'
+        cursor: canLaunch ? 'pointer' : 'not-allowed',
+        background: canLaunch ? P.accent : P.border,
+        color: canLaunch ? '#fff' : P.dim
       }
     }, docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'), error && /*#__PURE__*/React.createElement("div", {
       style: {
@@ -440,31 +434,12 @@ function App() {
         padding: '6px 14px',
         borderRadius: 6
       }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "11",
-      height: "13",
-      viewBox: "0 0 11 13",
-      fill: "none"
-    }, /*#__PURE__*/React.createElement("rect", {
-      x: "1",
-      y: "5",
-      width: "9",
-      height: "7",
-      rx: "1.5",
-      stroke: P.green,
-      strokeWidth: "1.4"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M3 5V3.5a2.5 2.5 0 015 0V5",
-      stroke: P.green,
-      strokeWidth: "1.4",
-      strokeLinecap: "round"
-    })), "100% local \u2014 files never leave your browser"));
+    }, "\uD83D\uDD12 100% local \u2014 files never leave your browser"));
   }
 
-  // ── Main viewer ──
-  const currentDoc = selDoc !== null ? docs[selDoc] : null;
-  const currentMeta = currentDoc ? meta[currentDoc.docId] : null;
-  const totalPages = currentDoc ? currentDoc.pages.length : 0;
+  // ── Main viewer ───────────────────────────────────────────────────────────
+  const GRID_W = selDocId ? '55%' : '100%';
+  const IMG_W = selDocId ? '45%' : '0';
   return /*#__PURE__*/React.createElement("div", {
     style: {
       height: '100vh',
@@ -480,9 +455,10 @@ function App() {
       display: 'flex',
       alignItems: 'center',
       gap: 12,
-      padding: '10px 16px',
+      padding: '8px 16px',
       borderBottom: '1px solid ' + P.border,
-      flexShrink: 0
+      flexShrink: 0,
+      background: P.surface
     }
   }, /*#__PURE__*/React.createElement("a", {
     href: "https://vdiscovery.com",
@@ -495,31 +471,58 @@ function App() {
     src: "v-outline.png",
     alt: "vDiscovery",
     style: {
-      height: 26
+      height: 24
     }
   })), /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: 700,
-      fontSize: 15
+      fontSize: 14
     }
-  }, "Image Viewer"), /*#__PURE__*/React.createElement("div", {
+  }, "Image Viewer"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: mono,
+      fontSize: 11,
+      color: P.dim,
+      background: P.tag,
+      padding: '2px 8px',
+      borderRadius: 4
+    }
+  }, optFile), datFile && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: mono,
+      fontSize: 11,
+      color: P.dim,
+      background: P.tag,
+      padding: '2px 8px',
+      borderRadius: 4
+    }
+  }, datFile), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: mono,
+      fontSize: 11,
+      color: P.dim,
+      background: P.tag,
+      padding: '2px 8px',
+      borderRadius: 4
+    }
+  }, imgDir), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
   }), /*#__PURE__*/React.createElement("input", {
     value: search,
     onChange: e => setSearch(e.target.value),
-    placeholder: "Search docs\u2026",
+    placeholder: "Search\u2026",
     style: {
-      background: P.surface,
+      background: P.bg,
       border: '1px solid ' + P.border,
       color: P.text,
       borderRadius: 6,
-      padding: '5px 10px',
+      padding: '4px 10px',
       fontFamily: mono,
       fontSize: 12,
       outline: 'none',
-      width: 200
+      width: 180
     }
   }), /*#__PURE__*/React.createElement("span", {
     style: {
@@ -527,20 +530,8 @@ function App() {
       fontSize: 11,
       color: P.dim
     }
-  }, filteredDocs.length.toLocaleString(), " docs"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setDocs([]);
-      setMeta({});
-      setMetaCols([]);
-      setFileIndex({});
-      setOptFile(null);
-      setDatFile(null);
-      setImgDir(null);
-      setSelDoc(null);
-      setImgSrc(null);
-      setError(null);
-      setLaunched(false);
-    },
+  }, filteredRows.length.toLocaleString(), " / ", gridRows.length.toLocaleString()), /*#__PURE__*/React.createElement("button", {
+    onClick: reset,
     style: {
       background: 'transparent',
       border: '1px solid ' + P.border,
@@ -552,91 +543,143 @@ function App() {
     }
   }, "\u2190 Back")), /*#__PURE__*/React.createElement("div", {
     style: {
-      display: 'flex',
       flex: 1,
+      display: 'flex',
       overflow: 'hidden'
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      width: 280,
-      flexShrink: 0,
-      borderRight: '1px solid ' + P.border,
+      width: GRID_W,
+      transition: 'width 0.15s',
       display: 'flex',
       flexDirection: 'column',
-      overflow: 'hidden'
+      overflow: 'hidden',
+      borderRight: selDocId ? '1px solid ' + P.border : 'none'
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: '8px 12px',
-      borderBottom: '1px solid ' + P.border,
-      fontFamily: mono,
-      fontSize: 11,
-      color: P.dim
-    }
-  }, optFile, datFile ? ' + ' + datFile : ''), /*#__PURE__*/React.createElement("div", {
-    style: {
       flex: 1,
-      overflowY: 'auto'
+      overflow: 'auto'
     }
-  }, filteredDocs.map((doc, i) => {
-    const m = meta[doc.docId];
-    const isSelected = selDoc === i;
-    return /*#__PURE__*/React.createElement("div", {
-      key: doc.docId,
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      borderCollapse: 'collapse',
+      width: '100%',
+      fontFamily: mono,
+      fontSize: 12,
+      whiteSpace: 'nowrap'
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      position: 'sticky',
+      top: 0,
+      zIndex: 2,
+      background: P.surface
+    }
+  }, /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: '7px 10px',
+      borderBottom: '2px solid ' + P.border,
+      borderRight: '1px solid ' + P.border,
+      color: P.dim,
+      fontWeight: 600,
+      fontSize: 11,
+      minWidth: 40,
+      cursor: 'default'
+    }
+  }, "#"), /*#__PURE__*/React.createElement("th", {
+    onClick: () => toggleSort(-1),
+    style: {
+      padding: '7px 12px',
+      borderBottom: '2px solid ' + P.border,
+      borderRight: '1px solid ' + P.border,
+      color: sortCol === -1 ? P.accent : P.dim,
+      fontWeight: 600,
+      fontSize: 11,
+      cursor: 'pointer',
+      userSelect: 'none'
+    }
+  }, "DOCID ", sortCol === -1 ? sortDir === 1 ? '↑' : '↓' : ''), headers.slice(1).map((h, i) => /*#__PURE__*/React.createElement("th", {
+    key: i,
+    onClick: () => toggleSort(i + 1),
+    style: {
+      padding: '7px 12px',
+      borderBottom: '2px solid ' + P.border,
+      borderRight: '1px solid ' + P.border,
+      color: sortCol === i + 1 ? P.accent : P.dim,
+      fontWeight: 600,
+      fontSize: 11,
+      cursor: 'pointer',
+      userSelect: 'none'
+    }
+  }, h, " ", sortCol === i + 1 ? sortDir === 1 ? '↑' : '↓' : '')), headers.length === 0 && /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: '7px 12px',
+      borderBottom: '2px solid ' + P.border,
+      color: P.dim,
+      fontWeight: 600,
+      fontSize: 11
+    }
+  }, "Pages"))), /*#__PURE__*/React.createElement("tbody", null, filteredRows.map((row, ri) => {
+    const isSel = row.docId === selDocId;
+    return /*#__PURE__*/React.createElement("tr", {
+      key: row.docId,
       onClick: () => {
-        setSelDoc(i);
+        setSelDocId(row.docId);
         setSelPage(0);
         setZoom('fit-page');
       },
+      onMouseEnter: () => setHovRow(ri),
+      onMouseLeave: () => setHovRow(null),
       style: {
-        padding: '8px 12px',
+        background: isSel ? P.rowSel : hovRow === ri ? P.rowHov : 'transparent',
         cursor: 'pointer',
-        borderBottom: '1px solid ' + P.border,
-        background: isSelected ? P.accentGlow : 'transparent',
-        borderLeft: '3px solid ' + (isSelected ? P.accent : 'transparent')
+        borderBottom: '1px solid ' + P.border
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("td", {
       style: {
-        fontFamily: mono,
-        fontSize: 12,
-        color: isSelected ? P.accent : P.text,
-        fontWeight: 600,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap'
-      }
-    }, doc.docId), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
+        padding: '5px 10px',
+        borderRight: '1px solid ' + P.border,
         color: P.dim,
-        marginTop: 2,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap'
+        textAlign: 'right'
       }
-    }, doc.pages.length, " page", doc.pages.length !== 1 ? 's' : '', m && m.DATE ? ' · ' + m.DATE : '', m && (m.FROM || m.CUSTODIAN) ? ' · ' + (m.FROM || m.CUSTODIAN) : ''), m && m.SUBJECT && /*#__PURE__*/React.createElement("div", {
+    }, ri + 1), /*#__PURE__*/React.createElement("td", {
       style: {
-        fontSize: 11,
-        color: P.dim,
-        marginTop: 1,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap'
+        padding: '5px 12px',
+        borderRight: '1px solid ' + P.border,
+        color: isSel ? P.accent : P.text,
+        fontWeight: isSel ? 600 : 400
       }
-    }, m.SUBJECT));
-  }))), /*#__PURE__*/React.createElement("div", {
+    }, row.docId), headers.slice(1).map((h, ci) => /*#__PURE__*/React.createElement("td", {
+      key: ci,
+      style: {
+        padding: '5px 12px',
+        borderRight: '1px solid ' + P.border,
+        color: P.dim,
+        maxWidth: 240,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, row.fields[ci + 1] || '')), headers.length === 0 && /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: '5px 12px',
+        color: P.dim
+      }
+    }, row.pages.length, " page", row.pages.length !== 1 ? 's' : ''));
+  }))))), selDocId && /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
+      width: IMG_W,
+      transition: 'width 0.15s',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden'
     }
-  }, currentDoc && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       alignItems: 'center',
-      gap: 10,
-      padding: '6px 16px',
+      gap: 8,
+      padding: '5px 12px',
       borderBottom: '1px solid ' + P.border,
       flexShrink: 0,
       background: P.surface
@@ -644,11 +687,11 @@ function App() {
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: mono,
-      fontSize: 13,
+      fontSize: 12,
       color: P.accent,
       fontWeight: 600
     }
-  }, currentDoc.docId), /*#__PURE__*/React.createElement("div", {
+  }, selDocId), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
@@ -659,28 +702,29 @@ function App() {
       background: 'transparent',
       border: '1px solid ' + P.border,
       color: selPage > 0 ? P.text : P.dim,
-      borderRadius: 5,
-      padding: '3px 10px',
+      borderRadius: 4,
+      padding: '2px 8px',
       cursor: selPage > 0 ? 'pointer' : 'default',
-      fontSize: 14
+      fontSize: 13
     }
   }, "\u2039"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: mono,
-      fontSize: 12,
-      color: P.dim
+      fontSize: 11,
+      color: P.dim,
+      whiteSpace: 'nowrap'
     }
-  }, "Page ", selPage + 1, " / ", totalPages), /*#__PURE__*/React.createElement("button", {
+  }, "p.", selPage + 1, "/", totalPages), /*#__PURE__*/React.createElement("button", {
     onClick: () => setSelPage(p => Math.min(totalPages - 1, p + 1)),
     disabled: selPage >= totalPages - 1,
     style: {
       background: 'transparent',
       border: '1px solid ' + P.border,
       color: selPage < totalPages - 1 ? P.text : P.dim,
-      borderRadius: 5,
-      padding: '3px 10px',
+      borderRadius: 4,
+      padding: '2px 8px',
       cursor: selPage < totalPages - 1 ? 'pointer' : 'default',
-      fontSize: 14
+      fontSize: 13
     }
   }, "\u203A"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25)),
@@ -688,17 +732,17 @@ function App() {
       background: 'transparent',
       border: '1px solid ' + P.border,
       color: P.text,
-      borderRadius: 5,
-      padding: '3px 8px',
+      borderRadius: 4,
+      padding: '2px 7px',
       cursor: 'pointer',
-      fontSize: 14
+      fontSize: 13
     }
   }, "\u2212"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: mono,
-      fontSize: 11,
+      fontSize: 10,
       color: P.dim,
-      minWidth: 52,
+      minWidth: 48,
       textAlign: 'center'
     }
   }, zoom === 'fit-page' ? 'fit page' : zoom === 'fit-width' ? 'fit width' : Math.round(zoom * 100) + '%'), /*#__PURE__*/React.createElement("button", {
@@ -707,10 +751,10 @@ function App() {
       background: 'transparent',
       border: '1px solid ' + P.border,
       color: P.text,
-      borderRadius: 5,
-      padding: '3px 8px',
+      borderRadius: 4,
+      padding: '2px 7px',
       cursor: 'pointer',
-      fontSize: 14
+      fontSize: 13
     }
   }, "+"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setZoom('fit-page'),
@@ -718,10 +762,10 @@ function App() {
       background: zoom === 'fit-page' ? P.accentGlow : 'transparent',
       border: '1px solid ' + (zoom === 'fit-page' ? P.accent : P.border),
       color: zoom === 'fit-page' ? P.accent : P.dim,
-      borderRadius: 5,
-      padding: '3px 8px',
+      borderRadius: 4,
+      padding: '2px 7px',
       cursor: 'pointer',
-      fontSize: 11
+      fontSize: 10
     }
   }, "fit page"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setZoom('fit-width'),
@@ -729,47 +773,12 @@ function App() {
       background: zoom === 'fit-width' ? P.accentGlow : 'transparent',
       border: '1px solid ' + (zoom === 'fit-width' ? P.accent : P.border),
       color: zoom === 'fit-width' ? P.accent : P.dim,
-      borderRadius: 5,
-      padding: '3px 8px',
+      borderRadius: 4,
+      padding: '2px 7px',
       cursor: 'pointer',
-      fontSize: 11
+      fontSize: 10
     }
-  }, "fit width")), currentMeta && metaCols.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 0,
-      borderBottom: '1px solid ' + P.border,
-      flexShrink: 0,
-      overflowX: 'auto',
-      background: P.bg
-    }
-  }, metaCols.map(col => /*#__PURE__*/React.createElement("div", {
-    key: col.key,
-    style: {
-      padding: '4px 12px',
-      borderRight: '1px solid ' + P.border,
-      minWidth: 80,
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontFamily: mono,
-      fontSize: 9,
-      color: P.dim,
-      textTransform: 'uppercase',
-      letterSpacing: 1
-    }
-  }, col.key), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontFamily: mono,
-      fontSize: 11,
-      color: P.text,
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
-      maxWidth: 180
-    }
-  }, currentMeta[col.key] || '—')))), /*#__PURE__*/React.createElement("div", {
+  }, "fit width")), /*#__PURE__*/React.createElement("div", {
     ref: imgAreaRef,
     style: {
       flex: 1,
@@ -780,54 +789,42 @@ function App() {
       padding: zoom === 'fit-page' ? 8 : 16,
       background: '#080C10'
     }
-  }, selDoc === null && /*#__PURE__*/React.createElement("div", {
+  }, imgLoading && /*#__PURE__*/React.createElement("div", {
     style: {
       color: P.dim,
       fontFamily: mono,
-      fontSize: 13,
-      marginTop: 80
+      fontSize: 12
     }
-  }, "\u2190 Select a document"), selDoc !== null && imgLoading && /*#__PURE__*/React.createElement("div", {
-    style: {
-      color: P.dim,
-      fontFamily: mono,
-      fontSize: 13,
-      marginTop: 80
-    }
-  }, "Loading\u2026"), selDoc !== null && !imgLoading && error && /*#__PURE__*/React.createElement("div", {
+  }, "Loading\u2026"), !imgLoading && error && /*#__PURE__*/React.createElement("div", {
     style: {
       color: P.red,
       fontFamily: mono,
-      fontSize: 12,
-      marginTop: 80,
-      maxWidth: 400,
-      textAlign: 'center'
+      fontSize: 11,
+      textAlign: 'center',
+      maxWidth: 300
     }
-  }, error), selDoc !== null && !imgLoading && !error && imgSrc && /*#__PURE__*/React.createElement("img", {
-    ref: imgElRef,
+  }, error), !imgLoading && !error && imgSrc && /*#__PURE__*/React.createElement("img", {
     src: imgSrc,
-    alt: currentDoc.pages[selPage],
+    alt: selDocId,
     style: {
       display: 'block',
       boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
-      maxWidth: zoom === 'fit-page' ? '100%' : zoom === 'fit-width' ? '100%' : 'none',
+      maxWidth: zoom === 'fit-page' || zoom === 'fit-width' ? '100%' : 'none',
       maxHeight: zoom === 'fit-page' ? '100%' : 'none',
       width: typeof zoom === 'number' ? zoom * 100 + '%' : undefined,
-      height: 'auto',
-      objectFit: 'contain'
+      height: 'auto'
     }
-  }), selDoc !== null && !imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && /*#__PURE__*/React.createElement("div", {
+  }), !imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       color: P.orange,
       fontFamily: mono,
-      fontSize: 12,
-      marginTop: 80,
+      fontSize: 11,
       textAlign: 'center'
     }
-  }, "No image folder loaded.", /*#__PURE__*/React.createElement("br", null), "Go back and select the image folder.")))));
+  }, "No image folder loaded.")))));
 }
 
-// ── File card (landing) ───────────────────────────────────────────────────────
+// ── File card ─────────────────────────────────────────────────────────────────
 function FileCard({
   label,
   hint,
@@ -840,25 +837,25 @@ function FileCard({
   return /*#__PURE__*/React.createElement("div", {
     onClick: () => ref.current && ref.current.click(),
     style: {
-      width: 200,
-      padding: '24px 20px',
-      borderRadius: 12,
+      width: 190,
+      padding: '20px 16px',
+      borderRadius: 10,
       border: '2px dashed ' + (loaded ? color : '#30363D'),
       background: loaded ? 'rgba(88,166,255,0.06)' : '#161B22',
       textAlign: 'center',
-      cursor: 'pointer',
-      transition: 'border-color 0.2s'
+      cursor: 'pointer'
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 28,
-      marginBottom: 8
+      fontSize: 26,
+      marginBottom: 6
     }
   }, loaded ? '✅' : '📄'), /*#__PURE__*/React.createElement("div", {
     style: {
       fontWeight: 600,
       color: loaded ? color : '#E6EDF3',
-      marginBottom: 4
+      marginBottom: 3,
+      fontSize: 14
     }
   }, label), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -875,8 +872,6 @@ function FileCard({
     onChange: e => e.target.files[0] && onSelect(e.target.files[0])
   }));
 }
-
-// ── Directory card (landing) ──────────────────────────────────────────────────
 function DirCard({
   label,
   hint,
@@ -887,25 +882,25 @@ function DirCard({
   return /*#__PURE__*/React.createElement("div", {
     onClick: onSelect,
     style: {
-      width: 200,
-      padding: '24px 20px',
-      borderRadius: 12,
+      width: 190,
+      padding: '20px 16px',
+      borderRadius: 10,
       border: '2px dashed ' + (loaded ? '#3FB950' : '#30363D'),
       background: loaded ? 'rgba(63,185,80,0.06)' : '#161B22',
       textAlign: 'center',
-      cursor: 'pointer',
-      transition: 'border-color 0.2s'
+      cursor: 'pointer'
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 28,
-      marginBottom: 8
+      fontSize: 26,
+      marginBottom: 6
     }
   }, loading ? '⏳' : loaded ? '✅' : '📁'), /*#__PURE__*/React.createElement("div", {
     style: {
       fontWeight: 600,
       color: loaded ? '#3FB950' : '#E6EDF3',
-      marginBottom: 4
+      marginBottom: 3,
+      fontSize: 14
     }
   }, label), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -914,8 +909,6 @@ function DirCard({
     }
   }, loading ? 'Indexing…' : loaded || hint));
 }
-
-// ── Version badge ─────────────────────────────────────────────────────────────
 function VersionBadge() {
   return /*#__PURE__*/React.createElement("div", {
     style: {
