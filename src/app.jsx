@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.7.2 · 2026-03-27';
+const APP_VERSION = 'v1.7.3 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -959,6 +959,22 @@ function App() {
   // ── Export QC report ──
   const exportQcReport = React.useCallback(() => {
     const { jsPDF } = window.jspdf;
+
+    // Pre-load logo onto a canvas so jsPDF can embed it as PNG
+    const logoImg = document.querySelector('img[alt="vDiscovery"]');
+    let logoDataUrl = null;
+    if (logoImg && logoImg.complete) {
+      try {
+        const lc = document.createElement('canvas');
+        // Render at 2× for crisp output
+        lc.width = logoImg.naturalWidth * 2; lc.height = logoImg.naturalHeight * 2;
+        const lctx = lc.getContext('2d');
+        lctx.scale(2, 2);
+        lctx.drawImage(logoImg, 0, 0);
+        logoDataUrl = lc.toDataURL('image/png');
+      } catch {}
+    }
+
     const pdf = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
     const W = 612, H = 792, M = 45; // letter in pts, 45pt margins
     const CW = W - M * 2;
@@ -988,10 +1004,18 @@ function App() {
     // ── Header band ────────────────────────────────────────────────────────
     fill('#0E1117'); pdf.rect(0, 0, W, 72, 'F');
     fill('#58A6FF'); pdf.rect(0, 68, W, 4, 'F'); // accent line
-    pdf.setFontSize(18); textCol('#58A6FF'); pdf.setFont('helvetica', 'bold');
-    pdf.text('vDiscovery Image Viewer', M, 30);
-    pdf.setFontSize(13); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
-    pdf.text('QC Report', M, 50);
+    // Logo image (preferred) or text fallback
+    if (logoDataUrl) {
+      const logoH = 28, logoW = logoH * 4; // approximate 4:1 aspect
+      pdf.addImage(logoDataUrl, 'PNG', M, 14, logoW, logoH);
+      pdf.setFontSize(11); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
+      pdf.text('QC Report', M, 54);
+    } else {
+      pdf.setFontSize(18); textCol('#58A6FF'); pdf.setFont('helvetica', 'bold');
+      pdf.text('vDiscovery Image Viewer', M, 30);
+      pdf.setFontSize(11); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
+      pdf.text('QC Report', M, 50);
+    }
     pdf.setFontSize(9); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
     pdf.text(qcResults.timestamp.toLocaleString(), W - M, 30, { align: 'right' });
     pdf.text('Confidential', W - M, 44, { align: 'right' });
@@ -1266,8 +1290,15 @@ function App() {
     for (let p = 1; p <= pageCount; p++) {
       pdf.setPage(p);
       fill('#0E1117'); pdf.rect(0, H - 28, W, 28, 'F');
-      pdf.setFontSize(8); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
-      pdf.text('vDiscovery Image Viewer QC Report  •  Confidential', M, H - 10);
+      if (logoDataUrl) {
+        const fh = 12, fw = fh * 4;
+        pdf.addImage(logoDataUrl, 'PNG', M, H - 22, fw, fh);
+        pdf.setFontSize(8); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
+        pdf.text('QC Report  •  Confidential', M + fw + 6, H - 10);
+      } else {
+        pdf.setFontSize(8); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
+        pdf.text('vDiscovery Image Viewer QC Report  •  Confidential', M, H - 10);
+      }
       pdf.text('Page ' + p + ' of ' + pageCount, W - M, H - 10, { align: 'right' });
     }
 
