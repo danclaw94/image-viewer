@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.0 · 2026-03-27';
+const APP_VERSION = 'v1.5.1 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -448,6 +448,7 @@ function App() {
 
   const imgAreaRef   = React.useRef(null);
   const fileIndexRef = React.useRef({});
+  const sessionFileRef = React.useRef(null);  // for load-session file input on landing
   fileIndexRef.current = fileIndex;
 
   const showNotice = React.useCallback((type, msg, ms = 3000) => {
@@ -839,7 +840,6 @@ function App() {
   // ── Landing ──────────────────────────────────────────────────────────────
   if (!launched) {
     const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
-    const sessionRef = React.useRef();
     return (
       <div style={{ minHeight: '100vh', background: P.bg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, fontFamily: sans }}>
         <a href="https://vdiscovery.com" target="_blank" rel="noopener noreferrer" style={{ lineHeight: 0 }}>
@@ -862,10 +862,10 @@ function App() {
           }}>
             {docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'}
           </button>
-          <button onClick={() => sessionRef.current && sessionRef.current.click()} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+          <button onClick={() => sessionFileRef.current && sessionFileRef.current.click()} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
             Load Review Session
           </button>
-          <input ref={sessionRef} type="file" accept=".json" style={{ display: 'none' }} onChange={e => e.target.files[0] && loadSessionFile(e.target.files[0])} />
+          <input ref={sessionFileRef} type="file" accept=".json" style={{ display: 'none' }} onChange={e => e.target.files[0] && loadSessionFile(e.target.files[0])} />
         </div>
         {error && <div style={{ color: P.red, fontFamily: mono, fontSize: 12, maxWidth: 480, textAlign: 'center' }}>{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: mono, fontSize: 11, color: P.green, background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)', padding: '6px 14px', borderRadius: 6 }}>
