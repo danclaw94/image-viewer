@@ -21,7 +21,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.7.1 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.7.2 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1705,7 +1705,7 @@ function App() {
       label: 'Not Responsive'
     }, {
       count: tagNone,
-      color: '#30363D',
+      color: '#8B949E',
       label: 'Untagged'
     }].filter(s => s.count > 0);
     if (slices.length === 1) {
@@ -1732,20 +1732,23 @@ function App() {
       }
     }
 
-    // Add pie image to PDF (left side)
-    const pieInPt = 120; // rendered size in points
-    const pieX = M;
+    // Center pie + legend block on the page
+    const pieInPt = 130;
+    const legColW = 190; // estimated legend column width
+    const blockW = pieInPt + 24 + legColW;
+    const blockX = M + (CW - blockW) / 2;
+    const pieX = blockX;
     pdf.addImage(pieCanvas.toDataURL('image/png'), 'PNG', pieX, y, pieInPt, pieInPt);
 
     // Legend (right of pie)
-    const legX = M + pieInPt + 20;
-    let legY = y + 20;
+    const legX = blockX + pieInPt + 24;
+    let legY = y + 18;
 
     // Section title
     pdf.setFontSize(11);
     textCol('#E6EDF3');
     pdf.setFont('helvetica', 'bold');
-    pdf.text('Tagging Summary', legX, legY - 8);
+    pdf.text('Tagging Summary', legX, legY - 6);
     const allSlices = [{
       count: tagR,
       color: '#3FB950',
@@ -1756,7 +1759,7 @@ function App() {
       label: 'Not Responsive'
     }, {
       count: tagNone,
-      color: '#30363D',
+      color: '#8B949E',
       label: 'Untagged'
     }];
     for (const s of allSlices) {
@@ -1774,7 +1777,7 @@ function App() {
       pdf.text(s.label + '  (' + pctStr + ')', legX + 20 + pdf.getTextWidth(s.count.toLocaleString()) + 4, legY + 9);
       legY += 22;
     }
-    y += pieInPt + 16;
+    y += pieInPt + 20;
 
     // ── Image Format Breakdown (bar chart) ─────────────────────────────────
     const formats = qcResults.imageStats.formats;

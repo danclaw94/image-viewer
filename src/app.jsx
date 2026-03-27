@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.7.1 · 2026-03-27';
+const APP_VERSION = 'v1.7.2 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1056,7 +1056,7 @@ function App() {
     const slices = [
       { count: tagR,    color: '#3FB950', label: 'Responsive' },
       { count: tagNR,   color: '#F85149', label: 'Not Responsive' },
-      { count: tagNone, color: '#30363D', label: 'Untagged' },
+      { count: tagNone, color: '#8B949E', label: 'Untagged' },
     ].filter(s => s.count > 0);
 
     if (slices.length === 1) {
@@ -1083,23 +1083,26 @@ function App() {
       }
     }
 
-    // Add pie image to PDF (left side)
-    const pieInPt = 120; // rendered size in points
-    const pieX = M;
+    // Center pie + legend block on the page
+    const pieInPt = 130;
+    const legColW = 190;  // estimated legend column width
+    const blockW  = pieInPt + 24 + legColW;
+    const blockX  = M + (CW - blockW) / 2;
+    const pieX    = blockX;
     pdf.addImage(pieCanvas.toDataURL('image/png'), 'PNG', pieX, y, pieInPt, pieInPt);
 
     // Legend (right of pie)
-    const legX = M + pieInPt + 20;
-    let legY = y + 20;
+    const legX = blockX + pieInPt + 24;
+    let legY = y + 18;
 
     // Section title
     pdf.setFontSize(11); textCol('#E6EDF3'); pdf.setFont('helvetica', 'bold');
-    pdf.text('Tagging Summary', legX, legY - 8);
+    pdf.text('Tagging Summary', legX, legY - 6);
 
     const allSlices = [
       { count: tagR,    color: '#3FB950', label: 'Responsive' },
       { count: tagNR,   color: '#F85149', label: 'Not Responsive' },
-      { count: tagNone, color: '#30363D', label: 'Untagged' },
+      { count: tagNone, color: '#8B949E', label: 'Untagged' },
     ];
     for (const s of allSlices) {
       const pctStr = tagTotal > 0 ? ((s.count / tagTotal) * 100).toFixed(1) + '%' : '0%';
@@ -1112,7 +1115,7 @@ function App() {
       legY += 22;
     }
 
-    y += pieInPt + 16;
+    y += pieInPt + 20;
 
     // ── Image Format Breakdown (bar chart) ─────────────────────────────────
     const formats = qcResults.imageStats.formats;
