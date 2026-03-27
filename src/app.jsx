@@ -80,6 +80,7 @@ function App() {
   const [imgDir,    setImgDir]    = React.useState(null);  // FileSystemDirectoryHandle
   const [error,     setError]     = React.useState(null);
   const [loading,   setLoading]   = React.useState(false);
+  const [launched,  setLaunched]  = React.useState(false); // true = leave landing screen
 
   // Parsed data
   const [docs,      setDocs]      = React.useState([]);     // [{docId, pages:[path]}]
@@ -259,7 +260,7 @@ function App() {
   }, [docs, meta, search]);
 
   // ── Landing screen ──
-  if (docs.length === 0) {
+  if (!launched) {
     return (
       <div style={{ minHeight: '100vh', background: P.bg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, fontFamily: sans }}>
         <a href="https://vdiscovery.com" target="_blank" rel="noopener noreferrer" style={{ lineHeight: 0 }}>
@@ -294,6 +295,20 @@ function App() {
           />
         </div>
 
+        {/* Launch button — requires OPT + image folder */}
+        <button
+          disabled={docs.length === 0 || Object.keys(fileIndex).length === 0}
+          onClick={() => setLaunched(true)}
+          style={{
+            padding: '12px 40px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700, cursor: docs.length > 0 && Object.keys(fileIndex).length > 0 ? 'pointer' : 'not-allowed',
+            background: docs.length > 0 && Object.keys(fileIndex).length > 0 ? P.accent : P.border,
+            color: docs.length > 0 && Object.keys(fileIndex).length > 0 ? '#fff' : P.dim,
+            transition: 'background 0.2s',
+          }}
+        >
+          {docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'}
+        </button>
+
         {error && <div style={{ color: P.red, fontFamily: mono, fontSize: 12, maxWidth: 480, textAlign: 'center' }}>{error}</div>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: mono, fontSize: 11, color: P.green, background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)', padding: '6px 14px', borderRadius: 6 }}>
@@ -327,7 +342,7 @@ function App() {
           style={{ background: P.surface, border: '1px solid ' + P.border, color: P.text, borderRadius: 6, padding: '5px 10px', fontFamily: mono, fontSize: 12, outline: 'none', width: 200 }}
         />
         <span style={{ fontFamily: mono, fontSize: 11, color: P.dim }}>{filteredDocs.length.toLocaleString()} docs</span>
-        <button onClick={() => { setDocs([]); setMeta({}); setMetaCols([]); setFileIndex({}); setOptFile(null); setDatFile(null); setImgDir(null); setSelDoc(null); setImgSrc(null); setError(null); }}
+        <button onClick={() => { setDocs([]); setMeta({}); setMetaCols([]); setFileIndex({}); setOptFile(null); setDatFile(null); setImgDir(null); setSelDoc(null); setImgSrc(null); setError(null); setLaunched(false); }}
           style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
           ← Back
         </button>
