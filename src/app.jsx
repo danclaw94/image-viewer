@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.7.3 · 2026-03-27';
+const APP_VERSION = 'v1.7.4 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -952,7 +952,13 @@ function App() {
         setPrintProgress({ done: pagesDone, total: totalPgs });
       }
     }
-    if (doc) window.open(doc.output('bloburl'), '_blank');
+    if (doc) {
+      const blob = doc.output('blob');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = 'print_' + new Date().toISOString().slice(0,10) + '.pdf';
+      a.click(); URL.revokeObjectURL(url);
+    }
     setPrintProgress(null);
   }, [fileIndex]);
 
@@ -960,20 +966,21 @@ function App() {
   const exportQcReport = React.useCallback(() => {
     const { jsPDF } = window.jspdf;
 
-    // Pre-load logo onto a canvas so jsPDF can embed it as PNG
-    const logoImg = document.querySelector('img[alt="vDiscovery"]');
+    // Pre-load the full vdiscovery-white.png logo (from landing page) onto a canvas
     let logoDataUrl = null;
-    if (logoImg && logoImg.complete) {
-      try {
+    let logoNatW = 0, logoNatH = 0;
+    try {
+      const logoImg = document.querySelector('img[src*="vdiscovery-white"]');
+      if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
         const lc = document.createElement('canvas');
-        // Render at 2× for crisp output
         lc.width = logoImg.naturalWidth * 2; lc.height = logoImg.naturalHeight * 2;
         const lctx = lc.getContext('2d');
         lctx.scale(2, 2);
         lctx.drawImage(logoImg, 0, 0);
         logoDataUrl = lc.toDataURL('image/png');
-      } catch {}
-    }
+        logoNatW = logoImg.naturalWidth; logoNatH = logoImg.naturalHeight;
+      }
+    } catch {}
 
     const pdf = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
     const W = 612, H = 792, M = 45; // letter in pts, 45pt margins
@@ -1006,7 +1013,8 @@ function App() {
     fill('#58A6FF'); pdf.rect(0, 68, W, 4, 'F'); // accent line
     // Logo image (preferred) or text fallback
     if (logoDataUrl) {
-      const logoH = 28, logoW = logoH * 4; // approximate 4:1 aspect
+      const logoH = 28;
+      const logoW = logoNatH > 0 ? Math.round(logoH * (logoNatW / logoNatH)) : logoH * 4;
       pdf.addImage(logoDataUrl, 'PNG', M, 14, logoW, logoH);
       pdf.setFontSize(11); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
       pdf.text('QC Report', M, 54);
@@ -1291,7 +1299,8 @@ function App() {
       pdf.setPage(p);
       fill('#0E1117'); pdf.rect(0, H - 28, W, 28, 'F');
       if (logoDataUrl) {
-        const fh = 12, fw = fh * 4;
+        const fh = 12;
+        const fw = logoNatH > 0 ? Math.round(fh * (logoNatW / logoNatH)) : fh * 4;
         pdf.addImage(logoDataUrl, 'PNG', M, H - 22, fw, fh);
         pdf.setFontSize(8); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
         pdf.text('QC Report  •  Confidential', M + fw + 6, H - 10);
@@ -1302,7 +1311,11 @@ function App() {
       pdf.text('Page ' + p + ' of ' + pageCount, W - M, H - 10, { align: 'right' });
     }
 
-    window.open(pdf.output('bloburl'), '_blank');
+    const pdfBlob = pdf.output('blob');
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a'); a.href = pdfUrl;
+    a.download = (optFile ? optFile.replace(/\.[^.]+$/, '') : 'qc') + '_report.pdf';
+    a.click(); URL.revokeObjectURL(pdfUrl);
   }, [qcResults, optFile, datFile, imgDir, gridRows, docs, headers, allRows, tagMap]);
 
   // ── Export QC report as CSV ──
