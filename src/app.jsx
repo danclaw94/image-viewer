@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.6.1 · 2026-03-27';
+const APP_VERSION = 'v1.6.2 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -687,9 +687,24 @@ function App() {
           await loadOpt(f);
         }
       }
+      // DAT — request permission if handle exists, or re-pick if one was previously used
       if (_handles.dat) {
         const perm = await _handles.dat.requestPermission({ mode: 'read' });
-        if (perm === 'granted') { const f = await _handles.dat.getFile(); await loadDat(f); }
+        if (perm === 'granted') { const f = await _handles.dat.getFile(); await loadDat(f, _handles.dat); }
+      } else if (resumeInfo && resumeInfo.datFile) {
+        // DAT was loaded before but handle is gone — ask user to re-select it
+        if (window.showOpenFilePicker) {
+          try {
+            const [h] = await window.showOpenFilePicker({ types: [{ description: 'DAT Files', accept: { 'text/plain': ['.dat', '.DAT', '.txt'] } }], multiple: false });
+            const f = await h.getFile();
+            _handles.dat = h;
+            await loadDat(f, h);
+          } catch (e2) {
+            if (e2.name !== 'AbortError') {
+              // User skipped — continue without DAT
+            }
+          }
+        }
       }
       if (_handles.dir) {
         const perm = await _handles.dir.requestPermission({ mode: 'read' });
