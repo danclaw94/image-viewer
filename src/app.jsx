@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.4.0 · 2026-03-27';
+const APP_VERSION = 'v1.5.0 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -37,21 +37,48 @@ function detectEncoding(buffer) {
 }
 function normPath(p) { return p.replace(/^\.[\\/]/, '').replace(/\\/g, '/').toLowerCase(); }
 
-// ── Image cache (LRU, max 30 blob URLs) ─────────────────────────────────────
+// ── Image cache (LRU, max 30) ─────────────────────────────────────────────
 const IMG_CACHE_MAX = 30;
-const imgCache = new Map(); // key → blobUrl (insertion order = LRU)
+const imgCache = new Map();
 function cacheGet(key) { return imgCache.get(key) || null; }
 function cachePut(key, url) {
-  if (imgCache.has(key)) imgCache.delete(key); // refresh LRU position
+  if (imgCache.has(key)) imgCache.delete(key);
   imgCache.set(key, url);
   if (imgCache.size > IMG_CACHE_MAX) {
     const oldest = imgCache.keys().next().value;
-    URL.revokeObjectURL(imgCache.get(oldest));
-    imgCache.delete(oldest);
+    URL.revokeObjectURL(imgCache.get(oldest)); imgCache.delete(oldest);
   }
 }
 
-// ── TIFF decode → blob URL ───────────────────────────────────────────────────
+// ── Thumbnail cache (LRU, max 120) ────────────────────────────────────────
+const THUMB_CACHE_MAX = 120;
+const THUMB_H = 72;
+const thumbCache = new Map();
+function thumbGet(key) { return thumbCache.get(key) || null; }
+function thumbPut(key, url) {
+  if (thumbCache.has(key)) thumbCache.delete(key);
+  thumbCache.set(key, url);
+  if (thumbCache.size > THUMB_CACHE_MAX) {
+    const oldest = thumbCache.keys().next().value;
+    URL.revokeObjectURL(thumbCache.get(oldest)); thumbCache.delete(oldest);
+  }
+}
+const thumbQueue = { active: 0, max: 3, pending: [] };
+function enqueueThumb(fn) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      thumbQueue.active++;
+      fn().then(resolve, reject).finally(() => {
+        thumbQueue.active--;
+        if (thumbQueue.pending.length) thumbQueue.pending.shift()();
+      });
+    };
+    if (thumbQueue.active < thumbQueue.max) run();
+    else thumbQueue.pending.push(run);
+  });
+}
+
+// ── TIFF decode → full blob URL ───────────────────────────────────────────
 async function decodeTiff(buf) {
   const ifds = UTIF.decode(buf);
   UTIF.decodeImage(buf, ifds[0]);
@@ -65,7 +92,26 @@ async function decodeTiff(buf) {
   return new Promise(res => canvas.toBlob(b => res(URL.createObjectURL(b))));
 }
 
-// ── Resolve + decode one image path → blob URL (with cache) ─────────────────
+// ── TIFF decode → thumbnail blob URL ─────────────────────────────────────
+async function decodeTiffThumb(buf) {
+  const ifds = UTIF.decode(buf);
+  UTIF.decodeImage(buf, ifds[0]);
+  const rgba = UTIF.toRGBA8(ifds[0]);
+  const srcW = ifds[0].width, srcH = ifds[0].height;
+  const scale = THUMB_H / srcH;
+  const dstW = Math.round(srcW * scale);
+  const full = document.createElement('canvas');
+  full.width = srcW; full.height = srcH;
+  const fctx = full.getContext('2d');
+  const id = fctx.createImageData(srcW, srcH);
+  id.data.set(rgba); fctx.putImageData(id, 0, 0);
+  const thumb = document.createElement('canvas');
+  thumb.width = dstW; thumb.height = THUMB_H;
+  thumb.getContext('2d').drawImage(full, 0, 0, dstW, THUMB_H);
+  return new Promise(res => thumb.toBlob(b => res(URL.createObjectURL(b)), 'image/jpeg', 0.65));
+}
+
+// ── Load full image URL ───────────────────────────────────────────────────
 async function loadImgUrl(optPath, fileIndex) {
   const cached = cacheGet(optPath);
   if (cached) return cached;
@@ -75,37 +121,200 @@ async function loadImgUrl(optPath, fileIndex) {
   if (!handle) return null;
   const file = await handle.getFile();
   const name = file.name.toLowerCase();
-  let url;
-  if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-    url = await decodeTiff(await file.arrayBuffer());
-  } else {
-    url = URL.createObjectURL(file);
-  }
+  const url = (name.endsWith('.tif') || name.endsWith('.tiff'))
+    ? await decodeTiff(await file.arrayBuffer())
+    : URL.createObjectURL(file);
   cachePut(optPath, url);
   return url;
 }
 
-// ── Palette ──────────────────────────────────────────────────────────────────
+// ── Load thumbnail URL ────────────────────────────────────────────────────
+async function loadThumbUrl(optPath, fileIndex) {
+  const cached = thumbGet(optPath);
+  if (cached) return cached;
+  return enqueueThumb(async () => {
+    const c2 = thumbGet(optPath);
+    if (c2) return c2;
+    const norm = normPath(optPath);
+    const filename = norm.split('/').pop();
+    const handle = fileIndex[norm] || fileIndex[filename];
+    if (!handle) return null;
+    const file = await handle.getFile();
+    const name = file.name.toLowerCase();
+    let url;
+    if (name.endsWith('.tif') || name.endsWith('.tiff')) {
+      url = await decodeTiffThumb(await file.arrayBuffer());
+    } else {
+      const bmp = await createImageBitmap(file);
+      const scale = THUMB_H / bmp.height;
+      const dstW = Math.round(bmp.width * scale);
+      const c = document.createElement('canvas');
+      c.width = dstW; c.height = THUMB_H;
+      c.getContext('2d').drawImage(bmp, 0, 0, dstW, THUMB_H);
+      bmp.close();
+      url = await new Promise(res => c.toBlob(b => res(URL.createObjectURL(b)), 'image/jpeg', 0.65));
+    }
+    thumbPut(optPath, url);
+    return url;
+  });
+}
+
+// ── blobUrl → canvas (for jsPDF) ─────────────────────────────────────────
+async function blobUrlToCanvas(blobUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      resolve({ canvas: c, width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = reject;
+    img.src = blobUrl;
+  });
+}
+
+// ── hexToRgb helper ───────────────────────────────────────────────────────
+function hexToRgb(hex) {
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+
+// ── getFileType ───────────────────────────────────────────────────────────
+function getFileType(row) {
+  if (!row || !row.pages.length) return '';
+  const ext = row.pages[0].split('.').pop().toUpperCase();
+  if (ext === 'TIF' || ext === 'TIFF') return 'TIFF';
+  if (ext === 'JPG' || ext === 'JPEG') return 'JPEG';
+  if (ext === 'PNG') return 'PNG';
+  if (ext === 'PDF') return 'PDF';
+  return ext;
+}
+
+// ── QC functions ──────────────────────────────────────────────────────────
+function qcMissingFiles(docs, fileIndex) {
+  const issues = [];
+  for (const doc of docs) {
+    for (let pi = 0; pi < doc.pages.length; pi++) {
+      const path = doc.pages[pi];
+      const norm = normPath(path);
+      const filename = norm.split('/').pop();
+      if (!fileIndex[norm] && !fileIndex[filename])
+        issues.push({ type: 'missing_file', docId: doc.docId, page: pi, path });
+    }
+  }
+  return issues;
+}
+function qcDatMismatches(docs, allRows, headers) {
+  if (!allRows.length || !headers.length) return [];
+  const optIds = new Set(docs.map(d => d.docId));
+  const datIds = new Set();
+  for (const row of allRows) { const id = row.fields[0]; if (id) datIds.add(id.trim()); }
+  const issues = [];
+  for (const id of optIds) if (!datIds.has(id)) issues.push({ type: 'opt_only', docId: id });
+  for (const id of datIds) if (!optIds.has(id)) issues.push({ type: 'dat_only', docId: id });
+  return issues;
+}
+function qcBatesGaps(docs) {
+  const issues = [];
+  const parsed = docs.map(d => {
+    const match = d.docId.match(/^(.*?)(\d+)$/);
+    if (!match) return null;
+    return { docId: d.docId, prefix: match[1], num: parseInt(match[2], 10), padLen: match[2].length };
+  }).filter(Boolean);
+  const groups = {};
+  for (const p of parsed) { if (!groups[p.prefix]) groups[p.prefix] = []; groups[p.prefix].push(p); }
+  for (const prefix in groups) {
+    const sorted = groups[prefix].sort((a, b) => a.num - b.num);
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i].num - sorted[i - 1].num;
+      if (gap > 1) {
+        const from = sorted[i - 1].num + 1, to = sorted[i].num - 1, padLen = sorted[i].padLen;
+        issues.push({ type: 'bates_gap', prefix, from: prefix + String(from).padStart(padLen, '0'), to: prefix + String(to).padStart(padLen, '0'), count: gap - 1, afterDocId: sorted[i - 1].docId });
+      }
+    }
+  }
+  return issues;
+}
+
+// ── Palette + constants ───────────────────────────────────────────────────
 const P = {
   bg: '#0E1117', surface: '#161B22', border: '#30363D',
   text: '#E6EDF3', dim: '#8B949E',
   accent: '#58A6FF', accentGlow: 'rgba(88,166,255,0.15)',
-  green: '#3FB950', orange: '#D29922', red: '#F85149', tag: '#21262D',
-  rowSel: 'rgba(88,166,255,0.18)', rowHov: '#1C2129',
+  green: '#3FB950', greenGlow: 'rgba(63,185,80,0.15)',
+  orange: '#D29922', red: '#F85149', redGlow: 'rgba(248,81,73,0.15)',
+  tag: '#21262D', rowSel: 'rgba(88,166,255,0.18)', rowHov: '#1C2129',
+  multiSel: 'rgba(88,166,255,0.08)',
 };
 const mono = "'JetBrains Mono','Fira Code','SF Mono',monospace";
 const sans = "'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif";
-
-// ── Virtual list row height ───────────────────────────────────────────────────
 const ROW_H = 28;
 
-// ── VirtualGrid — renders only visible rows ───────────────────────────────────
-function VirtualGrid({ rows, headers, selDocId, onSelect }) {
+const DEFAULT_SETTINGS = {
+  autoAdvance: false,
+  prefetchDepth: 3,
+  defaultZoom: 'fit-page',
+  qcOnLaunch: true,
+  showThumbnails: true,
+};
+
+// ── ThumbnailStrip ────────────────────────────────────────────────────────
+const ThumbItem = React.forwardRef(({ path, active, onClick, fileIndex }, ref) => {
+  const elRef = React.useRef(null);
+  const [src, setSrc] = React.useState(() => thumbGet(path));
+  const [loading, setLoading] = React.useState(false);
+  React.useImperativeHandle(ref, () => elRef.current);
+  React.useEffect(() => {
+    const cached = thumbGet(path);
+    if (cached) { setSrc(cached); return; }
+    const el = elRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !src && !loading) {
+        setLoading(true);
+        loadThumbUrl(path, fileIndex).then(url => { setSrc(url); setLoading(false); }).catch(() => setLoading(false));
+      }
+    }, { root: el.parentElement, rootMargin: '100px' });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [path, fileIndex, src, loading]);
+  return (
+    <div ref={elRef} onClick={onClick} style={{
+      flexShrink: 0, width: Math.round(THUMB_H * 0.77), height: THUMB_H,
+      border: '2px solid ' + (active ? P.accent : P.border),
+      borderRadius: 3, overflow: 'hidden', cursor: 'pointer', background: P.bg,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'border-color 0.1s',
+    }}>
+      {src
+        ? <img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        : <div style={{ width: '100%', height: '100%', background: loading ? 'linear-gradient(90deg,' + P.bg + ' 25%,' + P.surface + ' 50%,' + P.bg + ' 75%)' : P.bg, backgroundSize: loading ? '200% 100%' : undefined, animation: loading ? 'shimmer 1.5s infinite' : undefined }} />
+      }
+    </div>
+  );
+});
+
+function ThumbnailStrip({ pages, activePage, onSelect, fileIndex }) {
+  const thumbRefs = React.useRef([]);
+  React.useEffect(() => {
+    const el = thumbRefs.current[activePage];
+    if (el) el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  }, [activePage]);
+  if (!pages || pages.length < 2) return null;
+  return (
+    <div style={{ display: 'flex', gap: 4, padding: '6px 8px', overflowX: 'auto', overflowY: 'hidden', flexShrink: 0, borderTop: '1px solid ' + P.border, background: P.surface, height: THUMB_H + 20, alignItems: 'center' }}>
+      {pages.map((path, i) => (
+        <ThumbItem key={path} ref={el => thumbRefs.current[i] = el} path={path} active={i === activePage} onClick={() => onSelect(i)} fileIndex={fileIndex} />
+      ))}
+    </div>
+  );
+}
+
+// ── VirtualGrid ───────────────────────────────────────────────────────────
+function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap }) {
   const containerRef = React.useRef(null);
   const [scrollTop, setScrollTop] = React.useState(0);
-  const [height, setHeight]       = React.useState(400);
-  const [hovRow, setHovRow]       = React.useState(null);
-
+  const [height, setHeight] = React.useState(400);
+  const [hovRow, setHovRow] = React.useState(null);
   React.useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -113,54 +322,50 @@ function VirtualGrid({ rows, headers, selDocId, onSelect }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-
-  // Scroll selected row into view
   const selIdx = rows.findIndex(r => r.docId === selDocId);
   React.useEffect(() => {
     if (selIdx < 0 || !containerRef.current) return;
     const el = containerRef.current;
-    const rowTop = selIdx * ROW_H;
-    const rowBot = rowTop + ROW_H;
+    const rowTop = selIdx * ROW_H, rowBot = rowTop + ROW_H;
     if (rowTop < el.scrollTop) el.scrollTop = rowTop;
     else if (rowBot > el.scrollTop + el.clientHeight) el.scrollTop = rowBot - el.clientHeight;
   }, [selIdx]);
-
   const totalH = rows.length * ROW_H;
   const OVERSCAN = 10;
   const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
   const visible  = rows.slice(startIdx, endIdx);
-
   return (
-    <div ref={containerRef} onScroll={e => setScrollTop(e.target.scrollTop)}
-      style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-      {/* Spacer for full scroll height */}
+    <div ref={containerRef} onScroll={e => setScrollTop(e.target.scrollTop)} style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
       <div style={{ height: totalH, position: 'relative' }}>
-        {/* Offset block for visible rows */}
         <div style={{ position: 'absolute', top: startIdx * ROW_H, left: 0, right: 0 }}>
           <table style={{ borderCollapse: 'collapse', width: '100%', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
             <tbody>
               {visible.map((row, vi) => {
-                const ri     = startIdx + vi;
-                const isSel  = row.docId === selDocId;
-                const isHov  = hovRow === ri;
+                const ri = startIdx + vi;
+                const isSel = row.docId === selDocId;
+                const isMulti = selectedDocIds && selectedDocIds.has(row.docId);
+                const isHov = hovRow === ri;
+                const bg = isSel ? P.rowSel : isMulti ? P.multiSel : isHov ? P.rowHov : 'transparent';
+                const tag = tagMap && tagMap.get(row.docId);
                 return (
                   <tr key={row.docId}
-                    onClick={() => onSelect(row.docId)}
-                    onMouseEnter={() => setHovRow(ri)}
-                    onMouseLeave={() => setHovRow(null)}
-                    style={{ height: ROW_H, background: isSel ? P.rowSel : isHov ? P.rowHov : 'transparent', cursor: 'pointer', borderBottom: '1px solid ' + P.border }}
-                  >
+                    onClick={e => onMultiSelect ? onMultiSelect(row.docId, e) : onSelect(row.docId)}
+                    onMouseEnter={() => setHovRow(ri)} onMouseLeave={() => setHovRow(null)}
+                    style={{ height: ROW_H, background: bg, cursor: 'pointer', borderBottom: '1px solid ' + P.border }}>
                     <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
+                    {/* Tag column */}
+                    <td style={{ width: 40, padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center' }}>
+                      {tag === 'responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.green, background: 'rgba(63,185,80,0.12)', padding: '1px 5px', borderRadius: 3 }}>R</span>}
+                      {tag === 'not_responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.red, background: 'rgba(248,81,73,0.12)', padding: '1px 5px', borderRadius: 3 }}>NR</span>}
+                    </td>
                     <td style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>
                     {headers.slice(1).map((h, ci) => (
                       <td key={ci} style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {row.fields[ci + 1] || ''}
                       </td>
                     ))}
-                    {headers.length === 0 && (
-                      <td style={{ padding: '0 10px', color: P.dim }}>{row.pages.length}p</td>
-                    )}
+                    <td style={{ width: 55, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'center', fontSize: 11 }}>{row.pages.length}</td>
                   </tr>
                 );
               })}
@@ -172,8 +377,21 @@ function VirtualGrid({ rows, headers, selDocId, onSelect }) {
   );
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
+// ── PrintMenuItem ─────────────────────────────────────────────────────────
+function PrintMenuItem({ label, count, disabled, onClick }) {
+  const [hov, setHov] = React.useState(false);
+  return (
+    <div onClick={disabled ? undefined : onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ padding: '6px 14px', cursor: disabled ? 'default' : 'pointer', background: hov && !disabled ? P.rowHov : 'transparent', display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: disabled ? 0.4 : 1 }}>
+      <span style={{ fontSize: 12, color: P.text }}>{label}</span>
+      <span style={{ fontSize: 10, color: P.dim, fontFamily: mono }}>{count}</span>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────
 function App() {
+  // Files
   const [optFile,    setOptFile]    = React.useState(null);
   const [datFile,    setDatFile]    = React.useState(null);
   const [imgDir,     setImgDir]     = React.useState(null);
@@ -181,11 +399,14 @@ function App() {
   const [loading,    setLoading]    = React.useState(false);
   const [launched,   setLaunched]   = React.useState(false);
 
+  // Data
   const [docs,       setDocs]       = React.useState([]);
   const [allRows,    setAllRows]    = React.useState([]);
   const [headers,    setHeaders]    = React.useState([]);
+  const [datEncoding,setDatEncoding]= React.useState('utf-8');
   const [fileIndex,  setFileIndex]  = React.useState({});
 
+  // View
   const [selDocId,   setSelDocId]   = React.useState(null);
   const [selPage,    setSelPage]    = React.useState(0);
   const [imgSrc,     setImgSrc]     = React.useState(null);
@@ -194,29 +415,89 @@ function App() {
   const [zoom,       setZoom]       = React.useState('fit-page');
   const [sortCol,    setSortCol]    = React.useState(null);
   const [sortDir,    setSortDir]    = React.useState(1);
+  const [rotation,   setRotation]   = React.useState(0);
+  const [selectedDocIds, setSelectedDocIds] = React.useState(new Set());
+
+  // Settings
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [settings,     setSettings]     = React.useState(() => {
+    try { const s = localStorage.getItem('vdiscovery-iv-settings'); return s ? { ...DEFAULT_SETTINGS, ...JSON.parse(s) } : DEFAULT_SETTINGS; } catch { return DEFAULT_SETTINGS; }
+  });
+  React.useEffect(() => { localStorage.setItem('vdiscovery-iv-settings', JSON.stringify(settings)); }, [settings]);
+  const updateSetting = React.useCallback((k, v) => setSettings(prev => ({ ...prev, [k]: v })), []);
+
+  // QC
+  const [qcResults,  setQcResults]  = React.useState(null);
+  const [qcDismissed,setQcDismissed]= React.useState(false);
+  const [qcRunning,  setQcRunning]  = React.useState(false);
+  const [qcExpanded, setQcExpanded] = React.useState(false);
+
+  // Tagging
+  const [tagMap,       setTagMap]       = React.useState(new Map());
+  const [tagFilter,    setTagFilter]    = React.useState('all');
+  const [showExportDat,setShowExportDat]= React.useState(false);
+  const [exportColName,setExportColName]= React.useState('Responsiveness');
+
+  // UI state
+  const [copied,       setCopied]       = React.useState(false);
+  const [printMenu,    setPrintMenu]    = React.useState(false);
+  const [printProgress,setPrintProgress]= React.useState(null);
+  const [jumpInput,    setJumpInput]    = React.useState('');
+  const [showJump,     setShowJump]     = React.useState(false);
+  const [stateNotice,  setStateNotice]  = React.useState(null);
 
   const imgAreaRef   = React.useRef(null);
   const fileIndexRef = React.useRef({});
   fileIndexRef.current = fileIndex;
+
+  const showNotice = React.useCallback((type, msg, ms = 3000) => {
+    setStateNotice({ type, msg });
+    setTimeout(() => setStateNotice(null), ms);
+  }, []);
+
+  // ── Session restore (sessionStorage keyed by optFile) ──
+  React.useEffect(() => {
+    if (!launched || !optFile) return;
+    try {
+      const saved = sessionStorage.getItem('vdiscovery-iv-session-' + optFile);
+      if (!saved) return;
+      const data = JSON.parse(saved);
+      if (data.tags) setTagMap(new Map(Object.entries(data.tags)));
+      if (data.tagFilter) setTagFilter(data.tagFilter);
+      if (data.selDocId) setSelDocId(data.selDocId);
+      if (data.search) setSearch(data.search);
+    } catch {}
+  }, [launched]);
+
+  // ── Persist session ──
+  React.useEffect(() => {
+    if (!launched || !optFile) return;
+    try {
+      sessionStorage.setItem('vdiscovery-iv-session-' + optFile, JSON.stringify({
+        tags: Object.fromEntries(tagMap),
+        tagFilter, selDocId, search,
+      }));
+    } catch {}
+  }, [tagMap, tagFilter, selDocId, search, launched, optFile]);
 
   // ── Load OPT ──
   const loadOpt = async (file) => {
     const buf = await file.arrayBuffer();
     const text = new TextDecoder(detectEncoding(buf)).decode(buf);
     setDocs(parseOpt(text)); setOptFile(file.name);
-    setSelDocId(null); setSelPage(0); setImgSrc(null);
+    setSelDocId(null); setSelPage(0); setImgSrc(null); setQcResults(null);
   };
 
   // ── Load DAT ──
   const loadDat = async (file) => {
     const buf = await file.arrayBuffer();
-    const text = new TextDecoder(detectEncoding(buf)).decode(buf);
+    const enc = detectEncoding(buf);
+    const text = new TextDecoder(enc).decode(buf);
     const lines = text.split('\n').map(l => l.replace(/[\r]+$/, '')).filter(l => l.trim());
     if (!lines.length) return;
     const hdrs = parseRow(lines[0]);
-    setHeaders(hdrs);
-    setAllRows(lines.slice(1).map(l => ({ fields: parseRow(l) })));
-    setDatFile(file.name);
+    setHeaders(hdrs); setDatEncoding(enc);
+    setAllRows(lines.slice(1).map(l => ({ fields: parseRow(l) }))); setDatFile(file.name);
   };
 
   // ── Index image dir ──
@@ -246,101 +527,319 @@ function App() {
 
   const filteredRows = React.useMemo(() => {
     let rows = gridRows;
+    if (tagFilter !== 'all') {
+      rows = rows.filter(r => {
+        const t = tagMap.get(r.docId);
+        if (tagFilter === 'responsive') return t === 'responsive';
+        if (tagFilter === 'not_responsive') return t === 'not_responsive';
+        if (tagFilter === 'untagged') return !t;
+        return true;
+      });
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       rows = rows.filter(r => r.docId.toLowerCase().includes(q) || r.fields.some(f => f.toLowerCase().includes(q)));
     }
     if (sortCol !== null) {
       rows = [...rows].sort((a, b) => {
+        if (sortCol === 'pages') return (a.pages.length - b.pages.length) * sortDir;
+        if (sortCol === 'tag') { const ta = tagMap.get(a.docId) || '', tb = tagMap.get(b.docId) || ''; return ta.localeCompare(tb) * sortDir; }
         const av = (sortCol === -1 ? a.docId : a.fields[sortCol]) || '';
         const bv = (sortCol === -1 ? b.docId : b.fields[sortCol]) || '';
         return av.localeCompare(bv) * sortDir;
       });
     }
     return rows;
-  }, [gridRows, search, sortCol, sortDir]);
+  }, [gridRows, search, sortCol, sortDir, tagFilter, tagMap]);
 
   const selRow     = selDocId ? filteredRows.find(r => r.docId === selDocId) : null;
   const totalPages = selRow ? selRow.pages.length : 0;
+  const selIdx     = selDocId ? filteredRows.findIndex(r => r.docId === selDocId) : -1;
 
-  // ── Load current image (with cache) ──
+  // ── Tag function ──
+  const setTag = React.useCallback((docId, tag) => {
+    setTagMap(prev => {
+      const next = new Map(prev);
+      if (tag === null) next.delete(docId); else next.set(docId, tag);
+      return next;
+    });
+    if (tag !== null && settings.autoAdvance) {
+      const idx = filteredRows.findIndex(r => r.docId === docId);
+      if (idx >= 0 && idx < filteredRows.length - 1) {
+        const nextDoc = filteredRows[idx + 1];
+        setSelDocId(nextDoc.docId); setSelPage(0); setZoom(settings.defaultZoom); setRotation(0);
+        // Prefetch next doc
+        if (Object.keys(fileIndexRef.current).length) {
+          for (let i = 0; i < Math.min(settings.prefetchDepth, nextDoc.pages.length); i++) {
+            const p = nextDoc.pages[i];
+            if (p && !cacheGet(p)) loadImgUrl(p, fileIndexRef.current).catch(() => {});
+          }
+        }
+      }
+    }
+  }, [filteredRows, settings]);
+
+  // ── QC scan ──
+  const runQcScan = React.useCallback(() => {
+    setQcRunning(true);
+    requestAnimationFrame(() => {
+      const missingFiles   = qcMissingFiles(docs, fileIndex);
+      const datMismatches  = qcDatMismatches(docs, allRows, headers);
+      const batesGaps      = qcBatesGaps(docs);
+      setQcResults({ missingFiles, datMismatches, batesGaps, totalIssues: missingFiles.length + datMismatches.length + batesGaps.reduce((s, g) => s + g.count, 0), timestamp: new Date() });
+      setQcRunning(false); setQcDismissed(false); setQcExpanded(false);
+    });
+  }, [docs, fileIndex, allRows, headers]);
+
+  React.useEffect(() => {
+    if (!launched || !settings.qcOnLaunch || qcResults !== null) return;
+    runQcScan();
+  }, [launched]);
+
+  // ── Load current image ──
   React.useEffect(() => {
     if (!selRow || !Object.keys(fileIndex).length) { setImgSrc(null); return; }
     const path = selRow.pages[selPage];
     if (!path) { setImgSrc(null); return; }
     let cancelled = false;
-
-    // Show cached version immediately if available
     const cached = cacheGet(path);
     if (cached) { setImgSrc(cached); setImgLoading(false); }
     else { setImgLoading(true); setImgSrc(null); setError(null); }
-
     loadImgUrl(path, fileIndex).then(url => {
       if (cancelled) return;
       if (!url) { setError('Not found: ' + path); setImgLoading(false); return; }
       setImgSrc(url); setImgLoading(false); setError(null);
     }).catch(e => { if (!cancelled) { setError(e.message); setImgLoading(false); } });
-
     return () => { cancelled = true; };
   }, [selDocId, selPage, fileIndex]);
 
-  // ── Prefetch adjacent images in background ──
+  // ── Prefetch adjacent ──
   React.useEffect(() => {
     if (!selRow || !Object.keys(fileIndex).length) return;
-    const prefetch = (path) => {
-      if (!path || cacheGet(path)) return;
-      loadImgUrl(path, fileIndex).catch(() => {});
-    };
-    // Prefetch next + prev page of current doc
+    const prefetch = path => { if (!path || cacheGet(path)) return; loadImgUrl(path, fileIndex).catch(() => {}); };
     prefetch(selRow.pages[selPage + 1]);
     prefetch(selRow.pages[selPage - 1]);
-    // Prefetch first page of next + prev doc
-    const idx = filteredRows.findIndex(r => r.docId === selDocId);
-    if (idx >= 0) {
-      if (filteredRows[idx + 1]) prefetch(filteredRows[idx + 1].pages[0]);
-      if (filteredRows[idx - 1]) prefetch(filteredRows[idx - 1].pages[0]);
+    const depth = settings.prefetchDepth || 3;
+    if (selIdx >= 0) {
+      const nextDoc = filteredRows[selIdx + 1];
+      if (nextDoc) for (let i = 0; i < Math.min(depth, nextDoc.pages.length); i++) prefetch(nextDoc.pages[i]);
+      const prevDoc = filteredRows[selIdx - 1];
+      if (prevDoc) prefetch(prevDoc.pages[0]);
     }
-  }, [selDocId, selPage, fileIndex, filteredRows]);
+  }, [selDocId, selPage, fileIndex, filteredRows, settings.prefetchDepth]);
 
-  // ── Keyboard nav ──
+  // ── Keyboard nav + tagging ──
   React.useEffect(() => {
     if (!selDocId) return;
     const handler = e => {
-      const idx = filteredRows.findIndex(r => r.docId === selDocId);
+      if (e.target.tagName === 'INPUT') return;
+      if (e.key === 'r' || e.key === 'R') { e.preventDefault(); setTag(selDocId, tagMap.get(selDocId) === 'responsive' ? null : 'responsive'); return; }
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setTag(selDocId, tagMap.get(selDocId) === 'not_responsive' ? null : 'not_responsive'); return; }
+      if (e.key === 'u' || e.key === 'U') { e.preventDefault(); setTag(selDocId, null); return; }
       if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
         e.preventDefault();
         if (selPage < totalPages - 1) setSelPage(p => p + 1);
-        else if (idx < filteredRows.length - 1) { setSelDocId(filteredRows[idx + 1].docId); setSelPage(0); }
+        else if (selIdx < filteredRows.length - 1) { setSelDocId(filteredRows[selIdx + 1].docId); setSelPage(0); }
       }
       if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
         e.preventDefault();
         if (selPage > 0) setSelPage(p => p - 1);
-        else if (idx > 0) { setSelDocId(filteredRows[idx - 1].docId); setSelPage(0); }
+        else if (selIdx > 0) { setSelDocId(filteredRows[selIdx - 1].docId); setSelPage(0); }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selDocId, selPage, filteredRows, totalPages]);
+  }, [selDocId, selPage, filteredRows, totalPages, selIdx, tagMap, setTag]);
 
-  const toggleSort = (colIdx) => {
-    if (sortCol === colIdx) setSortDir(d => -d);
-    else { setSortCol(colIdx); setSortDir(1); }
-  };
+  // Reset copied on doc change
+  React.useEffect(() => { setCopied(false); setRotation(0); }, [selDocId]);
+
+  // Close print menu on outside click
+  React.useEffect(() => {
+    if (!printMenu) return;
+    const handler = () => setPrintMenu(false);
+    const timer = setTimeout(() => document.addEventListener('click', handler), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('click', handler); };
+  }, [printMenu]);
+
+  const toggleSort = col => { if (sortCol === col) setSortDir(d => -d); else { setSortCol(col); setSortDir(1); } };
 
   const selectDoc = React.useCallback((docId) => {
-    setSelDocId(docId); setSelPage(0); setZoom('fit-page');
-  }, []);
+    setSelDocId(docId); setSelPage(0); setZoom(settings.defaultZoom); setRotation(0);
+  }, [settings.defaultZoom]);
+
+  const handleMultiSelect = React.useCallback((docId, e) => {
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedDocIds(prev => { const n = new Set(prev); n.has(docId) ? n.delete(docId) : n.add(docId); return n; });
+      selectDoc(docId);
+    } else if (e.shiftKey && selDocId) {
+      const fromIdx = filteredRows.findIndex(r => r.docId === selDocId);
+      const toIdx   = filteredRows.findIndex(r => r.docId === docId);
+      if (fromIdx >= 0 && toIdx >= 0) {
+        const start = Math.min(fromIdx, toIdx), end = Math.max(fromIdx, toIdx);
+        setSelectedDocIds(prev => { const n = new Set(prev); filteredRows.slice(start, end + 1).forEach(r => n.add(r.docId)); return n; });
+      }
+      selectDoc(docId);
+    } else {
+      setSelectedDocIds(new Set());
+      selectDoc(docId);
+    }
+  }, [selDocId, filteredRows, selectDoc]);
+
+  const handleJump = React.useCallback(input => {
+    if (!input) return;
+    const rowNum = parseInt(input, 10);
+    if (!isNaN(rowNum) && rowNum >= 1 && rowNum <= filteredRows.length) { selectDoc(filteredRows[rowNum - 1].docId); return; }
+    const upper = input.toUpperCase();
+    const exact = filteredRows.find(r => r.docId.toUpperCase() === upper);
+    if (exact) { selectDoc(exact.docId); return; }
+    const partial = filteredRows.find(r => r.docId.toUpperCase().startsWith(upper));
+    if (partial) { selectDoc(partial.docId); return; }
+    const contains = filteredRows.find(r => r.docId.toUpperCase().includes(upper));
+    if (contains) { selectDoc(contains.docId); return; }
+    showNotice('warn', 'No match found for: ' + input);
+  }, [filteredRows, selectDoc, showNotice]);
+
+  // ── Print to PDF ──
+  const printToPdf = React.useCallback(async (rows) => {
+    const { jsPDF } = window.jspdf;
+    const totalPgs = rows.reduce((s, r) => s + r.pages.length, 0);
+    setPrintProgress({ done: 0, total: totalPgs });
+    let doc = null, pagesDone = 0;
+    for (const row of rows) {
+      for (let pi = 0; pi < row.pages.length; pi++) {
+        const path = row.pages[pi];
+        let url;
+        try { url = await loadImgUrl(path, fileIndex); } catch { url = null; }
+        if (url) {
+          const { canvas, width, height } = await blobUrlToCanvas(url);
+          const isLandscape = width > height;
+          const orientation = isLandscape ? 'landscape' : 'portrait';
+          const pageW = isLandscape ? 11 : 8.5, pageH = isLandscape ? 8.5 : 11;
+          const margin = 0.5, areaW = pageW - margin * 2, areaH = pageH - margin * 2;
+          const scale = Math.min(areaW / width, areaH / height);
+          const imgW = width * scale, imgH = height * scale;
+          const x = margin + (areaW - imgW) / 2, y = margin + (areaH - imgH) / 2;
+          if (!doc) doc = new jsPDF({ orientation, unit: 'in', format: 'letter' });
+          else doc.addPage('letter', orientation);
+          doc.addImage(canvas, 'JPEG', x, y, imgW, imgH);
+        }
+        pagesDone++;
+        setPrintProgress({ done: pagesDone, total: totalPgs });
+      }
+    }
+    if (doc) window.open(doc.output('bloburl'), '_blank');
+    setPrintProgress(null);
+  }, [fileIndex]);
+
+  // ── Export QC report ──
+  const exportQcReport = React.useCallback(() => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'in', format: 'letter', orientation: 'portrait' });
+    const margin = 0.75, pageW = 8.5 - margin * 2;
+    let y = margin;
+    const addText = (text, size, color, bold) => {
+      doc.setFontSize(size); doc.setTextColor(...hexToRgb(color));
+      doc.setFont(undefined, bold ? 'bold' : 'normal');
+      const lines = doc.splitTextToSize(text, pageW);
+      for (const line of lines) {
+        if (y > 10) { doc.addPage(); y = margin; }
+        doc.text(line, margin, y); y += size / 72 * 1.4;
+      }
+    };
+    const addLine = () => { doc.setDrawColor(...hexToRgb(P.border)); doc.line(margin, y, 8.5 - margin, y); y += 0.15; };
+    addText('vDiscovery Image Viewer — QC Report', 16, P.text, true);
+    addText('Generated: ' + qcResults.timestamp.toLocaleString(), 9, P.dim, false);
+    addText('OPT: ' + (optFile || 'N/A') + ' | DAT: ' + (datFile || 'N/A'), 9, P.dim, false);
+    y += 0.1; addLine();
+    addText('Total Issues: ' + qcResults.totalIssues, 12, qcResults.totalIssues > 0 ? P.orange : P.green, true);
+    y += 0.1;
+    if (qcResults.missingFiles.length > 0) {
+      addText('Missing Image Files (' + qcResults.missingFiles.length + ')', 11, P.red, true);
+      for (const i of qcResults.missingFiles) addText('  ' + i.docId + ' — page ' + (i.page + 1) + ': ' + i.path, 9, P.dim, false);
+      y += 0.1;
+    }
+    if (qcResults.datMismatches.length > 0) {
+      addText('OPT/DAT Mismatches (' + qcResults.datMismatches.length + ')', 11, P.orange, true);
+      for (const i of qcResults.datMismatches) addText('  ' + i.docId + ' — ' + (i.type === 'opt_only' ? 'In OPT but not DAT' : 'In DAT but not OPT'), 9, P.dim, false);
+      y += 0.1;
+    }
+    if (qcResults.batesGaps.length > 0) {
+      const totalMissing = qcResults.batesGaps.reduce((s, g) => s + g.count, 0);
+      addText('Bates Sequence Gaps (' + totalMissing + ' missing in ' + qcResults.batesGaps.length + ' gaps)', 11, P.orange, true);
+      for (const g of qcResults.batesGaps) addText('  ' + g.from + (g.count > 1 ? ' – ' + g.to : '') + ' (' + g.count + ' missing)', 9, P.dim, false);
+    }
+    window.open(doc.output('bloburl'), '_blank');
+  }, [qcResults, optFile, datFile]);
+
+  // ── Export tagged DAT ──
+  const exportTaggedDat = React.useCallback(() => {
+    const col = exportColName.trim() || 'Responsiveness';
+    const tagLabel = id => { const t = tagMap.get(id); return t === 'responsive' ? 'Responsive' : t === 'not_responsive' ? 'Not Responsive' : ''; };
+    let output = '';
+    if (headers.length > 0 && allRows.length > 0) {
+      output += QUOTE + [...headers, col].join(QUOTE + DELIM + QUOTE) + QUOTE + '\n';
+      for (const row of allRows) {
+        const docId = row.fields[0] ? row.fields[0].trim() : '';
+        output += QUOTE + [...row.fields, tagLabel(docId)].join(QUOTE + DELIM + QUOTE) + QUOTE + '\n';
+      }
+    } else {
+      output += QUOTE + 'DOCID' + QUOTE + DELIM + QUOTE + col + QUOTE + '\n';
+      for (const doc of docs) output += QUOTE + doc.docId + QUOTE + DELIM + QUOTE + tagLabel(doc.docId) + QUOTE + '\n';
+    }
+    let blob;
+    if (datEncoding === 'utf-16le') {
+      const buf = new ArrayBuffer(output.length * 2 + 2); const view = new DataView(buf);
+      view.setUint8(0, 0xFF); view.setUint8(1, 0xFE);
+      for (let i = 0; i < output.length; i++) view.setUint16(2 + i * 2, output.charCodeAt(i), true);
+      blob = new Blob([buf], { type: 'application/octet-stream' });
+    } else if (datEncoding === 'utf-16be') {
+      const buf = new ArrayBuffer(output.length * 2 + 2); const view = new DataView(buf);
+      view.setUint8(0, 0xFE); view.setUint8(1, 0xFF);
+      for (let i = 0; i < output.length; i++) view.setUint16(2 + i * 2, output.charCodeAt(i), false);
+      blob = new Blob([buf], { type: 'application/octet-stream' });
+    } else {
+      blob = new Blob([output], { type: 'text/plain' });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = (optFile ? optFile.replace(/\.[^.]+$/, '') : 'export') + '_tagged.dat';
+    a.click(); URL.revokeObjectURL(url);
+    showNotice('ok', 'DAT exported (' + tagMap.size + ' tagged docs)');
+  }, [headers, allRows, docs, tagMap, exportColName, optFile, datEncoding, showNotice]);
+
+  // ── Save/Load session JSON ──
+  const saveSession = React.useCallback(() => {
+    const data = { version: '1.5.0', tags: Object.fromEntries(tagMap), optFile, datFile, timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = (optFile ? optFile.replace(/\.[^.]+$/, '') : 'session') + '_review.json';
+    a.click(); URL.revokeObjectURL(url);
+    showNotice('ok', 'Session saved (' + tagMap.size + ' tags)');
+  }, [tagMap, optFile, datFile, showNotice]);
+
+  const loadSessionFile = React.useCallback(async (file) => {
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.tags) { setTagMap(new Map(Object.entries(data.tags))); showNotice('ok', 'Session loaded — ' + Object.keys(data.tags).length + ' tags restored'); }
+    } catch (e) { showNotice('warn', 'Could not load session: ' + e.message); }
+  }, [showNotice]);
 
   const reset = () => {
     setDocs([]); setAllRows([]); setHeaders([]); setFileIndex({});
     setOptFile(null); setDatFile(null); setImgDir(null);
     setSelDocId(null); setImgSrc(null); setError(null); setLaunched(false);
+    setTagMap(new Map()); setTagFilter('all'); setSelectedDocIds(new Set());
+    setQcResults(null); setQcDismissed(false);
     imgCache.forEach(url => URL.revokeObjectURL(url)); imgCache.clear();
+    thumbCache.forEach(url => URL.revokeObjectURL(url)); thumbCache.clear();
   };
 
-  // ── Landing ───────────────────────────────────────────────────────────────
+  // ── Landing ──────────────────────────────────────────────────────────────
   if (!launched) {
     const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
+    const sessionRef = React.useRef();
     return (
       <div style={{ minHeight: '100vh', background: P.bg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, fontFamily: sans }}>
         <a href="https://vdiscovery.com" target="_blank" rel="noopener noreferrer" style={{ lineHeight: 0 }}>
@@ -348,25 +847,26 @@ function App() {
         </a>
         <div style={{ fontSize: 22, fontWeight: 700, color: P.text }}>Image Viewer</div>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
-          <FileCard label="OPT File" hint="Required" color={P.accent} loaded={optFile}
-            onSelect={async f => { try { await loadOpt(f); } catch(e) { setError(e.message); }}}
-            accept=".opt,.OPT,.txt" />
-          <FileCard label="DAT File" hint="Optional — metadata" color={P.green} loaded={datFile}
-            onSelect={async f => { try { await loadDat(f); } catch(e) { setError(e.message); }}}
-            accept=".dat,.DAT,.txt" />
-          <DirCard label="Image Folder" hint="Required" loaded={imgDir} loading={loading}
-            onSelect={async () => {
-              try { const h = await window.showDirectoryPicker({ mode: 'read' }); await indexDir(h); }
-              catch(e) { if (e.name !== 'AbortError') setError(e.message); }
-            }} />
+          <FileCard label="OPT File" hint="Required" color={P.accent} loaded={optFile} onSelect={async f => { try { await loadOpt(f); } catch(e) { setError(e.message); }}} accept=".opt,.OPT,.txt" />
+          <FileCard label="DAT File" hint="Optional — metadata" color={P.green} loaded={datFile} onSelect={async f => { try { await loadDat(f); } catch(e) { setError(e.message); }}} accept=".dat,.DAT,.txt" />
+          <DirCard label="Image Folder" hint="Required" loaded={imgDir} loading={loading} onSelect={async () => {
+            try { const h = await window.showDirectoryPicker({ mode: 'read' }); await indexDir(h); }
+            catch(e) { if (e.name !== 'AbortError') setError(e.message); }
+          }} />
         </div>
-        <button disabled={!canLaunch} onClick={() => setLaunched(true)} style={{
-          padding: '12px 40px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700,
-          cursor: canLaunch ? 'pointer' : 'not-allowed',
-          background: canLaunch ? P.accent : P.border, color: canLaunch ? '#fff' : P.dim,
-        }}>
-          {docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'}
-        </button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <button disabled={!canLaunch} onClick={() => setLaunched(true)} style={{
+            padding: '11px 36px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700,
+            cursor: canLaunch ? 'pointer' : 'not-allowed',
+            background: canLaunch ? P.accent : P.border, color: canLaunch ? '#fff' : P.dim,
+          }}>
+            {docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'}
+          </button>
+          <button onClick={() => sessionRef.current && sessionRef.current.click()} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+            Load Review Session
+          </button>
+          <input ref={sessionRef} type="file" accept=".json" style={{ display: 'none' }} onChange={e => e.target.files[0] && loadSessionFile(e.target.files[0])} />
+        </div>
         {error && <div style={{ color: P.red, fontFamily: mono, fontSize: 12, maxWidth: 480, textAlign: 'center' }}>{error}</div>}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: mono, fontSize: 11, color: P.green, background: 'rgba(63,185,80,0.08)', border: '1px solid rgba(63,185,80,0.2)', padding: '6px 14px', borderRadius: 6 }}>
           🔒 100% local — files never leave your browser
@@ -378,11 +878,15 @@ function App() {
   // ── Main viewer ───────────────────────────────────────────────────────────
   const GRID_W = selDocId ? '55%' : '100%';
   const IMG_W  = selDocId ? '45%' : '0';
+  const rCnt = [...tagMap.values()].filter(v => v === 'responsive').length;
+  const nrCnt = [...tagMap.values()].filter(v => v === 'not_responsive').length;
+  const untaggedCnt = gridRows.length - tagMap.size;
+  const isRotated90 = rotation === 90 || rotation === 270;
 
   return (
     <div style={{ height: '100vh', background: P.bg, display: 'flex', flexDirection: 'column', fontFamily: sans, color: P.text, overflow: 'hidden' }}>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 16px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
         <a href="https://vdiscovery.com" target="_blank" rel="noopener noreferrer" style={{ lineHeight: 0 }}>
           <img src="v-outline.png" alt="vDiscovery" style={{ height: 24 }} />
@@ -391,62 +895,213 @@ function App() {
         <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, background: P.tag, padding: '2px 8px', borderRadius: 4 }}>{optFile}</span>
         {datFile && <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, background: P.tag, padding: '2px 8px', borderRadius: 4 }}>{datFile}</span>}
         <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, background: P.tag, padding: '2px 8px', borderRadius: 4 }}>{imgDir}</span>
+        {qcDismissed && qcResults && (
+          <button onClick={() => setQcDismissed(false)} style={{ fontFamily: mono, fontSize: 11, background: qcResults.totalIssues > 0 ? 'rgba(210,153,34,0.12)' : 'rgba(63,185,80,0.12)', border: '1px solid ' + (qcResults.totalIssues > 0 ? P.orange : P.green), color: qcResults.totalIssues > 0 ? P.orange : P.green, padding: '2px 8px', borderRadius: 4, cursor: 'pointer' }}>
+            {qcResults.totalIssues > 0 ? '⚠ ' + qcResults.totalIssues + ' QC issues' : '✓ QC'}
+          </button>
+        )}
         <div style={{ flex: 1 }} />
+        {selectedDocIds.size > 0 && <span style={{ fontFamily: mono, fontSize: 11, color: P.accent }}>{selectedDocIds.size} selected</span>}
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
           style={{ background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 6, padding: '4px 10px', fontFamily: mono, fontSize: 12, outline: 'none', width: 180 }} />
         <span style={{ fontFamily: mono, fontSize: 11, color: P.dim }}>{filteredRows.length.toLocaleString()} / {gridRows.length.toLocaleString()}</span>
+        {/* Go to */}
+        <button onClick={() => setShowJump(v => !v)} style={{ background: showJump ? P.accentGlow : 'transparent', border: '1px solid ' + (showJump ? P.accent : P.border), color: showJump ? P.accent : P.dim, borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11 }}>Go to…</button>
+        {showJump && (
+          <input autoFocus value={jumpInput} onChange={e => setJumpInput(e.target.value)}
+            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { handleJump(jumpInput.trim()); setJumpInput(''); setShowJump(false); } if (e.key === 'Escape') { setShowJump(false); setJumpInput(''); } }}
+            placeholder="Bates # or row #"
+            style={{ background: P.bg, border: '1px solid ' + P.accent, color: P.text, borderRadius: 4, padding: '4px 8px', fontFamily: mono, fontSize: 11, outline: 'none', width: 140 }} />
+        )}
+        {/* Export DAT */}
+        <button onClick={() => setShowExportDat(true)} disabled={tagMap.size === 0}
+          style={{ background: 'transparent', border: '1px solid ' + P.border, color: tagMap.size > 0 ? P.text : P.dim, padding: '4px 10px', borderRadius: 6, cursor: tagMap.size > 0 ? 'pointer' : 'default', fontSize: 12, opacity: tagMap.size > 0 ? 1 : 0.5 }}>
+          Export DAT
+        </button>
+        {/* Save session */}
+        <button onClick={saveSession} disabled={tagMap.size === 0} style={{ background: 'transparent', border: '1px solid ' + P.border, color: tagMap.size > 0 ? P.dim : P.dim, padding: '4px 10px', borderRadius: 6, cursor: tagMap.size > 0 ? 'pointer' : 'default', fontSize: 12, opacity: tagMap.size > 0 ? 1 : 0.5 }}>💾</button>
+        {/* Settings */}
+        <button onClick={() => setShowSettings(true)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>⚙</button>
         <button onClick={reset} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>← Back</button>
       </div>
 
-      {/* Body */}
+      {/* ── QC Banner ── */}
+      {!qcDismissed && (qcRunning || qcResults) && (
+        <div style={{ flexShrink: 0 }}>
+          <div style={{
+            padding: '5px 16px', borderBottom: '1px solid ' + P.border,
+            display: 'flex', alignItems: 'center', gap: 8, fontFamily: mono, fontSize: 11,
+            background: qcRunning ? 'rgba(88,166,255,0.06)' : qcResults.totalIssues > 0 ? 'rgba(210,153,34,0.06)' : 'rgba(63,185,80,0.06)',
+            color: qcRunning ? P.accent : qcResults.totalIssues > 0 ? P.orange : P.green,
+            borderLeft: '3px solid ' + (qcRunning ? P.accent : qcResults.totalIssues > 0 ? P.orange : P.green),
+          }}>
+            {qcRunning ? (
+              <span>⏳ Running QC scan…</span>
+            ) : (
+              <>
+                <span>{qcResults.totalIssues > 0 ? '⚠' : '✓'}</span>
+                <span>QC: {qcResults.totalIssues > 0
+                  ? qcResults.totalIssues + ' issues — ' + [qcResults.missingFiles.length > 0 && qcResults.missingFiles.length + ' missing files', qcResults.datMismatches.length > 0 && qcResults.datMismatches.length + ' OPT/DAT mismatches', qcResults.batesGaps.length > 0 && qcResults.batesGaps.reduce((s,g)=>s+g.count,0) + ' Bates gaps'].filter(Boolean).join(', ')
+                  : 'No issues found'
+                }</span>
+                {qcResults.totalIssues > 0 && <button onClick={() => setQcExpanded(v => !v)} style={{ background: 'transparent', border: '1px solid ' + P.orange + '66', color: P.orange, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>{qcExpanded ? 'Hide' : 'View'}</button>}
+                {qcResults.totalIssues > 0 && <button onClick={exportQcReport} style={{ background: 'transparent', border: '1px solid ' + P.orange + '66', color: P.orange, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>Export PDF</button>}
+                <button onClick={runQcScan} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>Re-scan</button>
+              </>
+            )}
+            <div style={{ flex: 1 }} />
+            <button onClick={() => setQcDismissed(true)} style={{ background: 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 13 }}>✕</button>
+          </div>
+          {!qcRunning && qcExpanded && qcResults.totalIssues > 0 && (
+            <div style={{ maxHeight: 180, overflowY: 'auto', borderBottom: '1px solid ' + P.border, background: P.surface, padding: '6px 16px', fontFamily: mono, fontSize: 11 }}>
+              {qcResults.missingFiles.map((i, idx) => (
+                <div key={idx} onClick={() => selectDoc(i.docId)} style={{ padding: '2px 0', cursor: 'pointer', color: P.red }}>
+                  ✗ Missing: {i.docId} p.{i.page + 1} — {i.path}
+                </div>
+              ))}
+              {qcResults.datMismatches.map((i, idx) => (
+                <div key={idx} onClick={() => i.type === 'opt_only' && selectDoc(i.docId)} style={{ padding: '2px 0', cursor: i.type === 'opt_only' ? 'pointer' : 'default', color: P.orange }}>
+                  ⚠ {i.docId} — {i.type === 'opt_only' ? 'In OPT only' : 'In DAT only'}
+                </div>
+              ))}
+              {qcResults.batesGaps.map((g, idx) => (
+                <div key={idx} onClick={() => selectDoc(g.afterDocId)} style={{ padding: '2px 0', cursor: 'pointer', color: P.orange }}>
+                  ⚠ Gap after {g.afterDocId}: {g.from}{g.count > 1 ? ' – ' + g.to : ''} ({g.count} missing)
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Body ── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-        {/* ── Grid (virtual) ── */}
-        <div style={{ width: GRID_W, transition: 'width 0.12s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? ('1px solid ' + P.border) : 'none' }}>
-          {/* Sticky header */}
+        {/* ── Grid ── */}
+        <div style={{ width: GRID_W, transition: 'width 0.12s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? '1px solid ' + P.border : 'none' }}>
+          {/* Tag filter bar — matches PST style */}
+          <div style={{ display: 'flex', gap: 4, padding: '4px 8px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface, flexWrap: 'wrap', alignItems: 'center' }}>
+            {[['all', 'All', P.dim, gridRows.length], ['responsive', 'R', P.green, rCnt], ['not_responsive', 'NR', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
+              const isActive = tagFilter === f;
+              return (
+                <button key={f} onClick={() => setTagFilter(f)} style={{
+                  fontSize: 10, padding: '2px 7px', borderRadius: 4,
+                  border: '1px solid ' + (isActive ? color : P.border),
+                  background: isActive ? (f === 'responsive' ? P.greenGlow : f === 'not_responsive' ? P.redGlow : P.accentGlow) : 'transparent',
+                  color: isActive ? color : P.dim, cursor: 'pointer', fontWeight: isActive ? 600 : 400, fontFamily: mono,
+                }}>
+                  {label} ({count})
+                </button>
+              );
+            })}
+          </div>
+          {/* Column headers */}
           <div style={{ overflowX: 'auto', flexShrink: 0, borderBottom: '2px solid ' + P.border }}>
             <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', width: '100%', tableLayout: 'fixed' }}>
               <thead>
                 <tr style={{ background: P.surface }}>
                   <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
-                  <th onClick={() => toggleSort(-1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === -1 ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
-                    DOCID {sortCol === -1 ? (sortDir === 1 ? '↑' : '↓') : ''}
-                  </th>
+                  <th onClick={() => toggleSort('tag')} style={{ width: 40, padding: '6px 4px', borderRight: '1px solid ' + P.border, color: sortCol === 'tag' ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}>Tag {sortCol === 'tag' ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
+                  <th onClick={() => toggleSort(-1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === -1 ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>DOCID {sortCol === -1 ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
                   {headers.slice(1).map((h, i) => (
-                    <th key={i} onClick={() => toggleSort(i + 1)}
-                      style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === (i + 1) ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
+                    <th key={i} onClick={() => toggleSort(i + 1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === (i + 1) ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
                       {h} {sortCol === (i + 1) ? (sortDir === 1 ? '↑' : '↓') : ''}
                     </th>
                   ))}
-                  {headers.length === 0 && <th style={{ padding: '6px 10px', color: P.dim, fontWeight: 600, fontSize: 11 }}>Pages</th>}
+                  <th onClick={() => toggleSort('pages')} style={{ width: 55, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: sortCol === 'pages' ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}>Pages {sortCol === 'pages' ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
                 </tr>
               </thead>
             </table>
           </div>
-          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} onSelect={selectDoc} />
+          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect} tagMap={tagMap} />
         </div>
 
         {/* ── Image panel ── */}
         {selDocId && (
           <div style={{ width: IMG_W, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Toolbar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
-              <span style={{ fontFamily: mono, fontSize: 12, color: P.accent, fontWeight: 600 }}>{selDocId}</span>
+            {/* ── Tag bar — matches PST style exactly ── */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid ' + P.border, background: P.surface, flexShrink: 0, flexWrap: 'nowrap' }}>
+              {/* Auto-advance toggle */}
+              <button onClick={() => updateSetting('autoAdvance', !settings.autoAdvance)} title="Auto-advance to next document after tagging"
+                style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0, cursor: 'pointer',
+                  background: settings.autoAdvance ? P.accent : 'transparent', border: '1.5px solid ' + (settings.autoAdvance ? P.accent : P.border), color: settings.autoAdvance ? '#fff' : P.dim }}>
+                ⚡ Auto-advance
+              </button>
+              <div style={{ width: 1, height: 16, background: P.border, flexShrink: 0 }} />
+              {/* Tag buttons */}
+              {[['R', 'responsive', P.green, P.greenGlow], ['NR', 'not_responsive', P.red, P.redGlow]].map(([label, key, color, glow]) => {
+                const isActive = tagMap.get(selDocId) === key;
+                return (
+                  <button key={key} onClick={() => setTag(selDocId, tagMap.get(selDocId) === key ? null : key)}
+                    style={{ padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                      background: isActive ? glow : 'transparent', color: isActive ? color : P.dim,
+                      border: '1.5px solid ' + (isActive ? color : P.border), transition: 'all 0.12s' }}>
+                    {isActive ? '✓ ' : ''}{label === 'R' ? 'Responsive' : 'Not Responsive'}
+                  </button>
+                );
+              })}
+              {tagMap.get(selDocId) && (
+                <button onClick={() => setTag(selDocId, null)} style={{ fontSize: 11, color: P.dim, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+                  ✕ Clear
+                </button>
+              )}
               <div style={{ flex: 1 }} />
+              {/* Prev/Next nav */}
+              <button onClick={() => { if (selPage > 0) setSelPage(p => p - 1); else if (selIdx > 0) { setSelDocId(filteredRows[selIdx - 1].docId); setSelPage(0); } }} disabled={selIdx <= 0 && selPage === 0}
+                style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, background: 'transparent', border: '1px solid ' + P.border, color: (selIdx > 0 || selPage > 0) ? P.text : P.dim, cursor: (selIdx > 0 || selPage > 0) ? 'pointer' : 'default', flexShrink: 0 }}>‹</button>
+              <span style={{ fontSize: 11, color: P.dim, whiteSpace: 'nowrap', flexShrink: 0, fontFamily: mono }}>
+                {selIdx + 1} / {filteredRows.length}
+              </span>
+              <button onClick={() => { if (selPage < totalPages - 1) setSelPage(p => p + 1); else if (selIdx < filteredRows.length - 1) { setSelDocId(filteredRows[selIdx + 1].docId); setSelPage(0); } }} disabled={selIdx >= filteredRows.length - 1 && selPage >= totalPages - 1}
+                style={{ padding: '3px 8px', borderRadius: 4, fontSize: 11, background: 'transparent', border: '1px solid ' + P.border, color: (selIdx < filteredRows.length - 1 || selPage < totalPages - 1) ? P.text : P.dim, cursor: (selIdx < filteredRows.length - 1 || selPage < totalPages - 1) ? 'pointer' : 'default', flexShrink: 0 }}>›</button>
+            </div>
+
+            {/* ── Image toolbar ── */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 10px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.bg, flexWrap: 'wrap' }}>
+              {/* Doc ID + copy */}
+              <span style={{ fontFamily: mono, fontSize: 12, color: P.accent, fontWeight: 600 }}>{selDocId}</span>
+              <button onClick={() => { navigator.clipboard.writeText(selDocId).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
+                style={{ background: 'transparent', border: 'none', color: copied ? P.green : P.dim, cursor: 'pointer', fontSize: 11, padding: '0 4px', fontFamily: mono }} title="Copy Doc ID">
+                {copied ? '✓ Copied' : '⧉'}
+              </button>
+              {/* Doc stats */}
+              <span style={{ fontFamily: mono, fontSize: 10, color: P.dim, whiteSpace: 'nowrap' }}>
+                Doc {selIdx + 1} of {filteredRows.length} · {totalPages}p · {getFileType(selRow)}
+              </span>
+              <div style={{ flex: 1 }} />
+              {/* Page nav */}
               <button onClick={() => setSelPage(p => Math.max(0, p - 1))} disabled={selPage === 0}
                 style={{ background: 'transparent', border: '1px solid ' + P.border, color: selPage > 0 ? P.text : P.dim, borderRadius: 4, padding: '2px 8px', cursor: selPage > 0 ? 'pointer' : 'default', fontSize: 13 }}>‹</button>
               <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, whiteSpace: 'nowrap' }}>p.{selPage + 1}/{totalPages}</span>
               <button onClick={() => setSelPage(p => Math.min(totalPages - 1, p + 1))} disabled={selPage >= totalPages - 1}
                 style={{ background: 'transparent', border: '1px solid ' + P.border, color: selPage < totalPages - 1 ? P.text : P.dim, borderRadius: 4, padding: '2px 8px', cursor: selPage < totalPages - 1 ? 'pointer' : 'default', fontSize: 13 }}>›</button>
-              <button onClick={() => setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25))}
-                style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 13 }}>−</button>
+              {/* Zoom */}
+              <button onClick={() => setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 13 }}>−</button>
               <span style={{ fontFamily: mono, fontSize: 10, color: P.dim, minWidth: 48, textAlign: 'center' }}>
                 {zoom === 'fit-page' ? 'fit page' : zoom === 'fit-width' ? 'fit width' : Math.round(zoom * 100) + '%'}
               </span>
-              <button onClick={() => setZoom(z => Math.min(4, (typeof z === 'number' ? z : 1) + 0.25))}
-                style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 13 }}>+</button>
+              <button onClick={() => setZoom(z => Math.min(4, (typeof z === 'number' ? z : 1) + 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 13 }}>+</button>
               <button onClick={() => setZoom('fit-page')} style={{ background: zoom === 'fit-page' ? P.accentGlow : 'transparent', border: '1px solid ' + (zoom === 'fit-page' ? P.accent : P.border), color: zoom === 'fit-page' ? P.accent : P.dim, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 10 }}>fit page</button>
               <button onClick={() => setZoom('fit-width')} style={{ background: zoom === 'fit-width' ? P.accentGlow : 'transparent', border: '1px solid ' + (zoom === 'fit-width' ? P.accent : P.border), color: zoom === 'fit-width' ? P.accent : P.dim, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 10 }}>fit width</button>
+              {/* Rotation */}
+              <button onClick={() => setRotation(r => (r + 90) % 360)} style={{ background: rotation > 0 ? P.accentGlow : 'transparent', border: '1px solid ' + (rotation > 0 ? P.accent : P.border), color: rotation > 0 ? P.accent : P.dim, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 12 }}>
+                ↻ {rotation > 0 ? rotation + '°' : ''}
+              </button>
+              {/* Print menu */}
+              <div style={{ position: 'relative' }}>
+                <button onClick={() => setPrintMenu(v => !v)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, borderRadius: 4, padding: '2px 7px', cursor: 'pointer', fontSize: 11 }}>🖨 ▾</button>
+                {printMenu && (
+                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: P.surface, border: '1px solid ' + P.border, borderRadius: 6, zIndex: 100, minWidth: 190, padding: '4px 0', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+                    <PrintMenuItem label="Current Document" count={totalPages + 'p'} onClick={() => { setPrintMenu(false); printToPdf([selRow]); }} />
+                    <PrintMenuItem label="Selected Documents" count={selectedDocIds.size + ' docs'} disabled={selectedDocIds.size === 0} onClick={() => { setPrintMenu(false); printToPdf(filteredRows.filter(r => selectedDocIds.has(r.docId))); }} />
+                    <PrintMenuItem label="All Documents" count={filteredRows.length + ' docs'} onClick={() => {
+                      if (filteredRows.length > 50 && !confirm('Generate PDF for ' + filteredRows.length + ' documents? This may take a while.')) return;
+                      setPrintMenu(false); printToPdf(filteredRows);
+                    }} />
+                  </div>
+                )}
+              </div>
+              {printProgress && <span style={{ fontFamily: mono, fontSize: 10, color: P.orange }}>PDF {printProgress.done}/{printProgress.total}</span>}
             </div>
 
             {/* Image area */}
@@ -455,20 +1110,103 @@ function App() {
               {!imgLoading && error && <div style={{ color: P.red, fontFamily: mono, fontSize: 11, textAlign: 'center', maxWidth: 300 }}>{error}</div>}
               {imgSrc && (
                 <img src={imgSrc} alt={selDocId} style={{
-                  display: 'block',
-                  boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
+                  display: 'block', boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
                   maxWidth: (zoom === 'fit-page' || zoom === 'fit-width') ? '100%' : 'none',
-                  maxHeight: zoom === 'fit-page' ? '100%' : 'none',
+                  maxHeight: zoom === 'fit-page' ? (isRotated90 ? '100vw' : '100%') : 'none',
                   width: typeof zoom === 'number' ? (zoom * 100) + '%' : undefined,
-                  height: 'auto',
-                  opacity: imgLoading ? 0.4 : 1,
-                  transition: 'opacity 0.1s',
+                  height: 'auto', opacity: imgLoading ? 0.4 : 1, transition: 'opacity 0.1s',
+                  transform: rotation > 0 ? 'rotate(' + rotation + 'deg)' : undefined,
+                  transformOrigin: 'center center',
                 }} />
               )}
             </div>
+
+            {/* Thumbnail strip */}
+            {settings.showThumbnails && (
+              <ThumbnailStrip pages={selRow ? selRow.pages : []} activePage={selPage}
+                onSelect={i => { setSelPage(i); if (imgAreaRef.current) imgAreaRef.current.scrollTop = 0; }}
+                fileIndex={fileIndex} />
+            )}
           </div>
         )}
       </div>
+
+      {/* ── Settings Modal ── */}
+      {showSettings && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+          onClick={e => { if (e.target === e.currentTarget) setShowSettings(false); }}>
+          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 10, padding: 24, width: 420, maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
+              <span style={{ fontWeight: 700, fontSize: 15, color: P.text }}>Settings</span>
+              <button onClick={() => setShowSettings(false)} style={{ background: 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 16 }}>✕</button>
+            </div>
+            {[
+              { key: 'autoAdvance', label: 'Auto-advance on tag', desc: 'Jump to next document automatically after tagging.', type: 'toggle' },
+              { key: 'showThumbnails', label: 'Thumbnail strip', desc: 'Show page thumbnails below the image (multi-page docs only).', type: 'toggle' },
+              { key: 'qcOnLaunch', label: 'QC scan on launch', desc: 'Automatically scan for issues when the viewer opens.', type: 'toggle' },
+              { key: 'prefetchDepth', label: 'Prefetch depth', desc: 'Pre-decode first N pages of the next document. Range: 1–10.', type: 'number', min: 1, max: 10 },
+              { key: 'defaultZoom', label: 'Default zoom', desc: 'Zoom mode when opening a document.', type: 'select', options: ['fit-page', 'fit-width'] },
+            ].map(s => (
+              <div key={s.key} style={{ marginBottom: 16, padding: '10px 14px', background: P.bg, borderRadius: 7, border: '1px solid ' + P.border }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: P.text }}>{s.label}</span>
+                  {s.type === 'toggle' && (
+                    <div onClick={() => updateSetting(s.key, !settings[s.key])} style={{ width: 40, height: 22, borderRadius: 11, background: settings[s.key] ? P.accent : P.border, cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
+                      <div style={{ position: 'absolute', top: 3, left: settings[s.key] ? 21 : 3, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s' }} />
+                    </div>
+                  )}
+                  {s.type === 'number' && (
+                    <input type="number" min={s.min} max={s.max} value={settings[s.key]}
+                      onChange={e => updateSetting(s.key, Math.min(s.max, Math.max(s.min, parseInt(e.target.value) || s.min)))}
+                      style={{ width: 60, background: P.surface, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '3px 7px', fontFamily: mono, fontSize: 12, outline: 'none', textAlign: 'center' }} />
+                  )}
+                  {s.type === 'select' && (
+                    <select value={settings[s.key]} onChange={e => updateSetting(s.key, e.target.value)}
+                      style={{ background: P.surface, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '3px 7px', fontSize: 12, outline: 'none' }}>
+                      {s.options.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: P.dim }}>{s.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Export DAT Modal ── */}
+      {showExportDat && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+          onClick={e => { if (e.target === e.currentTarget) setShowExportDat(false); }}>
+          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 10, padding: 24, width: 400 }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: P.text }}>Export Tagged DAT</div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Tag Column Name</label>
+              <input value={exportColName} onChange={e => setExportColName(e.target.value)}
+                style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ fontSize: 11, color: P.dim, fontFamily: mono, marginBottom: 16 }}>
+              {tagMap.size} tagged · {rCnt} Responsive · {nrCnt} Not Responsive
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowExportDat(false)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+              <button onClick={() => { exportTaggedDat(); setShowExportDat(false); }} style={{ background: P.accent, border: 'none', color: '#fff', padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Export →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Toast notification (PST-style) ── */}
+      {stateNotice && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 2000, padding: '8px 18px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+          fontFamily: sans, boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+          background: stateNotice.type === 'ok' ? '#1a3a1a' : stateNotice.type === 'warn' ? '#3a2e00' : '#3a1010',
+          color: stateNotice.type === 'ok' ? P.green : stateNotice.type === 'warn' ? P.orange : P.red,
+          border: '1px solid ' + (stateNotice.type === 'ok' ? P.green : stateNotice.type === 'warn' ? P.orange : P.red) + '44',
+        }}>{stateNotice.msg}</div>
+      )}
     </div>
   );
 }
@@ -484,7 +1222,6 @@ function FileCard({ label, hint, color, loaded, onSelect, accept }) {
     </div>
   );
 }
-
 function DirCard({ label, hint, loaded, loading, onSelect }) {
   return (
     <div onClick={onSelect} style={{ width: 190, padding: '20px 16px', borderRadius: 10, border: '2px dashed ' + (loaded ? '#3FB950' : '#30363D'), background: loaded ? 'rgba(63,185,80,0.06)' : '#161B22', textAlign: 'center', cursor: 'pointer' }}>
@@ -494,7 +1231,6 @@ function DirCard({ label, hint, loaded, loading, onSelect }) {
     </div>
   );
 }
-
 function VersionBadge() {
   return (
     <div style={{ position: 'fixed', bottom: 8, right: 12, zIndex: 9999, fontFamily: 'monospace', fontSize: 10, color: '#30363d', pointerEvents: 'none', userSelect: 'none' }}>
@@ -504,9 +1240,4 @@ function VersionBadge() {
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  React.createElement(React.Fragment, null,
-    React.createElement(App, null),
-    React.createElement(VersionBadge, null)
-  )
-);
+root.render(React.createElement(React.Fragment, null, React.createElement(App, null), React.createElement(VersionBadge, null)));
