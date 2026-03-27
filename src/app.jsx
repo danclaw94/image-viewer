@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.6 · 2026-03-27';
+const APP_VERSION = 'v1.5.7 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -587,6 +587,8 @@ function App() {
       if (data.tagFilter) setTagFilter(data.tagFilter);
       if (data.selDocId) setSelDocId(data.selDocId);
       if (data.search) setSearch(data.search);
+      if (data.hiddenCols) setHiddenCols(new Set(data.hiddenCols));
+      if (data.colWidths) setColWidths(data.colWidths);
     } catch {}
   }, [launched]);
 
@@ -597,9 +599,11 @@ function App() {
       sessionStorage.setItem('vdiscovery-iv-session-' + optFile, JSON.stringify({
         tags: Object.fromEntries(tagMap),
         tagFilter, selDocId, search,
+        hiddenCols: [...hiddenCols],
+        colWidths,
       }));
     } catch {}
-  }, [tagMap, tagFilter, selDocId, search, launched, optFile]);
+  }, [tagMap, tagFilter, selDocId, search, hiddenCols, colWidths, launched, optFile]);
 
   // ── Load OPT ──
   const loadOpt = async (file) => {
@@ -957,7 +961,7 @@ function App() {
 
   // ── Save/Load session JSON ──
   const saveSession = React.useCallback(() => {
-    const data = { version: '1.5.0', tags: Object.fromEntries(tagMap), optFile, datFile, timestamp: new Date().toISOString() };
+    const data = { version: '1.5.0', tags: Object.fromEntries(tagMap), optFile, datFile, timestamp: new Date().toISOString(), hiddenCols: [...hiddenCols], colWidths };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url;
@@ -969,7 +973,10 @@ function App() {
   const loadSessionFile = React.useCallback(async (file) => {
     try {
       const data = JSON.parse(await file.text());
-      if (data.tags) { setTagMap(new Map(Object.entries(data.tags))); showNotice('ok', 'Session loaded — ' + Object.keys(data.tags).length + ' tags restored'); }
+      if (data.tags) { setTagMap(new Map(Object.entries(data.tags))); }
+      if (data.hiddenCols) setHiddenCols(new Set(data.hiddenCols));
+      if (data.colWidths) setColWidths(data.colWidths);
+      showNotice('ok', 'Session loaded — ' + Object.keys(data.tags || {}).length + ' tags restored');
     } catch (e) { showNotice('warn', 'Could not load session: ' + e.message); }
   }, [showNotice]);
 
