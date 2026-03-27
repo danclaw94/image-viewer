@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.7.0 · 2026-03-27';
+const APP_VERSION = 'v1.7.1 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1040,6 +1040,80 @@ function App() {
     });
     y += 2 * (cardH + 8) + 16;
 
+    // ── Tagging Summary — pie chart + legend ──────────────────────────────
+    checkPage(160);
+    const tagR   = [...tagMap.values()].filter(v => v === 'responsive').length;
+    const tagNR  = [...tagMap.values()].filter(v => v === 'not_responsive').length;
+    const tagNone = totalDocs - tagR - tagNR;
+    const tagTotal = totalDocs;
+
+    // Draw pie using off-screen canvas
+    const pieSize = 160; // canvas px
+    const pieCanvas = document.createElement('canvas');
+    pieCanvas.width = pieSize; pieCanvas.height = pieSize;
+    const pctx = pieCanvas.getContext('2d');
+    const cx2 = pieSize / 2, cy2 = pieSize / 2, radius = pieSize / 2 - 4;
+    const slices = [
+      { count: tagR,    color: '#3FB950', label: 'Responsive' },
+      { count: tagNR,   color: '#F85149', label: 'Not Responsive' },
+      { count: tagNone, color: '#30363D', label: 'Untagged' },
+    ].filter(s => s.count > 0);
+
+    if (slices.length === 1) {
+      // Full circle
+      pctx.beginPath();
+      pctx.arc(cx2, cy2, radius, 0, Math.PI * 2);
+      pctx.fillStyle = slices[0].color;
+      pctx.fill();
+    } else {
+      let startAngle = -Math.PI / 2;
+      for (const s of slices) {
+        const sweep = (s.count / tagTotal) * Math.PI * 2;
+        pctx.beginPath();
+        pctx.moveTo(cx2, cy2);
+        pctx.arc(cx2, cy2, radius, startAngle, startAngle + sweep);
+        pctx.closePath();
+        pctx.fillStyle = s.color;
+        pctx.fill();
+        // Thin white gap between slices
+        pctx.strokeStyle = '#0E1117';
+        pctx.lineWidth = 2;
+        pctx.stroke();
+        startAngle += sweep;
+      }
+    }
+
+    // Add pie image to PDF (left side)
+    const pieInPt = 120; // rendered size in points
+    const pieX = M;
+    pdf.addImage(pieCanvas.toDataURL('image/png'), 'PNG', pieX, y, pieInPt, pieInPt);
+
+    // Legend (right of pie)
+    const legX = M + pieInPt + 20;
+    let legY = y + 20;
+
+    // Section title
+    pdf.setFontSize(11); textCol('#E6EDF3'); pdf.setFont('helvetica', 'bold');
+    pdf.text('Tagging Summary', legX, legY - 8);
+
+    const allSlices = [
+      { count: tagR,    color: '#3FB950', label: 'Responsive' },
+      { count: tagNR,   color: '#F85149', label: 'Not Responsive' },
+      { count: tagNone, color: '#30363D', label: 'Untagged' },
+    ];
+    for (const s of allSlices) {
+      const pctStr = tagTotal > 0 ? ((s.count / tagTotal) * 100).toFixed(1) + '%' : '0%';
+      // Color swatch
+      fill(s.color); pdf.rect(legX, legY, 14, 10, 'F');
+      pdf.setFontSize(10); textCol('#E6EDF3'); pdf.setFont('helvetica', 'bold');
+      pdf.text(s.count.toLocaleString(), legX + 20, legY + 9);
+      pdf.setFontSize(9); textCol('#8B949E'); pdf.setFont('helvetica', 'normal');
+      pdf.text(s.label + '  (' + pctStr + ')', legX + 20 + pdf.getTextWidth(s.count.toLocaleString()) + 4, legY + 9);
+      legY += 22;
+    }
+
+    y += pieInPt + 16;
+
     // ── Image Format Breakdown (bar chart) ─────────────────────────────────
     const formats = qcResults.imageStats.formats;
     const formatEntries = Object.entries(formats).sort((a, b) => b[1] - a[1]);
@@ -1195,7 +1269,7 @@ function App() {
     }
 
     window.open(pdf.output('bloburl'), '_blank');
-  }, [qcResults, optFile, datFile, imgDir, gridRows, docs, headers, allRows]);
+  }, [qcResults, optFile, datFile, imgDir, gridRows, docs, headers, allRows, tagMap]);
 
   // ── Export QC report as CSV ──
   const exportQcCsv = React.useCallback(() => {
