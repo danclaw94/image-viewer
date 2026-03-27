@@ -19,7 +19,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.1.0 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.2.0 · 2026-03-27';
 
 // ── OPT parser ──────────────────────────────────────────────────────────────
 // Format: DOCID,VOLUME,.\PATH\TO\FILE.TIF,Y,,PAGECOUNT
@@ -120,7 +120,10 @@ function App() {
   const [imgSrc, setImgSrc] = React.useState(null);
   const [imgLoading, setImgLoading] = React.useState(false);
   const [search, setSearch] = React.useState('');
-  const [zoom, setZoom] = React.useState(1);
+  // zoom: number = explicit scale factor, or 'fit-page' / 'fit-width'
+  const [zoom, setZoom] = React.useState('fit-page');
+  const imgAreaRef = React.useRef(null);
+  const imgElRef = React.useRef(null);
   const optRef = React.useRef();
   const datRef = React.useRef();
   const prevUrl = React.useRef(null);
@@ -583,7 +586,7 @@ function App() {
       onClick: () => {
         setSelDoc(i);
         setSelPage(0);
-        setZoom(1);
+        setZoom('fit-page');
       },
       style: {
         padding: '8px 12px',
@@ -680,7 +683,7 @@ function App() {
       fontSize: 14
     }
   }, "\u203A"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setZoom(z => Math.max(0.25, z - 0.25)),
+    onClick: () => setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25)),
     style: {
       background: 'transparent',
       border: '1px solid ' + P.border,
@@ -695,11 +698,11 @@ function App() {
       fontFamily: mono,
       fontSize: 11,
       color: P.dim,
-      minWidth: 36,
+      minWidth: 52,
       textAlign: 'center'
     }
-  }, Math.round(zoom * 100), "%"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setZoom(z => Math.min(4, z + 0.25)),
+  }, zoom === 'fit-page' ? 'fit page' : zoom === 'fit-width' ? 'fit width' : Math.round(zoom * 100) + '%'), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setZoom(z => Math.min(4, (typeof z === 'number' ? z : 1) + 0.25)),
     style: {
       background: 'transparent',
       border: '1px solid ' + P.border,
@@ -710,17 +713,28 @@ function App() {
       fontSize: 14
     }
   }, "+"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setZoom(1),
+    onClick: () => setZoom('fit-page'),
     style: {
-      background: 'transparent',
-      border: '1px solid ' + P.border,
-      color: P.dim,
+      background: zoom === 'fit-page' ? P.accentGlow : 'transparent',
+      border: '1px solid ' + (zoom === 'fit-page' ? P.accent : P.border),
+      color: zoom === 'fit-page' ? P.accent : P.dim,
       borderRadius: 5,
       padding: '3px 8px',
       cursor: 'pointer',
       fontSize: 11
     }
-  }, "fit")), currentMeta && metaCols.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "fit page"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setZoom('fit-width'),
+    style: {
+      background: zoom === 'fit-width' ? P.accentGlow : 'transparent',
+      border: '1px solid ' + (zoom === 'fit-width' ? P.accent : P.border),
+      color: zoom === 'fit-width' ? P.accent : P.dim,
+      borderRadius: 5,
+      padding: '3px 8px',
+      cursor: 'pointer',
+      fontSize: 11
+    }
+  }, "fit width")), currentMeta && metaCols.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       display: 'flex',
       gap: 0,
@@ -756,13 +770,14 @@ function App() {
       maxWidth: 180
     }
   }, currentMeta[col.key] || '—')))), /*#__PURE__*/React.createElement("div", {
+    ref: imgAreaRef,
     style: {
       flex: 1,
       overflow: 'auto',
       display: 'flex',
-      alignItems: 'flex-start',
+      alignItems: zoom === 'fit-page' ? 'center' : 'flex-start',
       justifyContent: 'center',
-      padding: 16,
+      padding: zoom === 'fit-page' ? 8 : 16,
       background: '#080C10'
     }
   }, selDoc === null && /*#__PURE__*/React.createElement("div", {
@@ -789,14 +804,17 @@ function App() {
       textAlign: 'center'
     }
   }, error), selDoc !== null && !imgLoading && !error && imgSrc && /*#__PURE__*/React.createElement("img", {
+    ref: imgElRef,
     src: imgSrc,
     alt: currentDoc.pages[selPage],
     style: {
-      maxWidth: zoom === 1 ? '100%' : 'none',
-      width: zoom !== 1 ? zoom * 100 + '%' : undefined,
-      height: 'auto',
       display: 'block',
-      boxShadow: '0 4px 30px rgba(0,0,0,0.6)'
+      boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
+      maxWidth: zoom === 'fit-page' ? '100%' : zoom === 'fit-width' ? '100%' : 'none',
+      maxHeight: zoom === 'fit-page' ? '100%' : 'none',
+      width: typeof zoom === 'number' ? zoom * 100 + '%' : undefined,
+      height: 'auto',
+      objectFit: 'contain'
     }
   }), selDoc !== null && !imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {

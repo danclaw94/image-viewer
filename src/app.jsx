@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.0.0 · 2026-03-27';
+const APP_VERSION = 'v1.2.0 · 2026-03-27';
 
 // ── OPT parser ──────────────────────────────────────────────────────────────
 // Format: DOCID,VOLUME,.\PATH\TO\FILE.TIF,Y,,PAGECOUNT
@@ -94,7 +94,10 @@ function App() {
   const [imgSrc,    setImgSrc]    = React.useState(null);
   const [imgLoading,setImgLoading]= React.useState(false);
   const [search,    setSearch]    = React.useState('');
-  const [zoom,      setZoom]      = React.useState(1);
+  // zoom: number = explicit scale factor, or 'fit-page' / 'fit-width'
+  const [zoom,      setZoom]      = React.useState('fit-page');
+  const imgAreaRef  = React.useRef(null);
+  const imgElRef    = React.useRef(null);
 
   const optRef  = React.useRef();
   const datRef  = React.useRef();
@@ -361,7 +364,7 @@ function App() {
               return (
                 <div
                   key={doc.docId}
-                  onClick={() => { setSelDoc(i); setSelPage(0); setZoom(1); }}
+                  onClick={() => { setSelDoc(i); setSelPage(0); setZoom('fit-page'); }}
                   style={{
                     padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid ' + P.border,
                     background: isSelected ? P.accentGlow : 'transparent',
@@ -401,10 +404,13 @@ function App() {
               <button onClick={() => setSelPage(p => Math.min(totalPages - 1, p + 1))} disabled={selPage >= totalPages - 1}
                 style={{ background: 'transparent', border: '1px solid ' + P.border, color: selPage < totalPages - 1 ? P.text : P.dim, borderRadius: 5, padding: '3px 10px', cursor: selPage < totalPages - 1 ? 'pointer' : 'default', fontSize: 14 }}>›</button>
               {/* Zoom */}
-              <button onClick={() => setZoom(z => Math.max(0.25, z - 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 14 }}>−</button>
-              <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, minWidth: 36, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
-              <button onClick={() => setZoom(z => Math.min(4, z + 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 14 }}>+</button>
-              <button onClick={() => setZoom(1)} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}>fit</button>
+              <button onClick={() => setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 14 }}>−</button>
+              <span style={{ fontFamily: mono, fontSize: 11, color: P.dim, minWidth: 52, textAlign: 'center' }}>
+                {zoom === 'fit-page' ? 'fit page' : zoom === 'fit-width' ? 'fit width' : Math.round(zoom * 100) + '%'}
+              </span>
+              <button onClick={() => setZoom(z => Math.min(4, (typeof z === 'number' ? z : 1) + 0.25))} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.text, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 14 }}>+</button>
+              <button onClick={() => setZoom('fit-page')} style={{ background: zoom === 'fit-page' ? P.accentGlow : 'transparent', border: '1px solid ' + (zoom === 'fit-page' ? P.accent : P.border), color: zoom === 'fit-page' ? P.accent : P.dim, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}>fit page</button>
+              <button onClick={() => setZoom('fit-width')} style={{ background: zoom === 'fit-width' ? P.accentGlow : 'transparent', border: '1px solid ' + (zoom === 'fit-width' ? P.accent : P.border), color: zoom === 'fit-width' ? P.accent : P.dim, borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}>fit width</button>
             </div>
           )}
 
@@ -423,7 +429,7 @@ function App() {
           )}
 
           {/* Image area */}
-          <div style={{ flex: 1, overflow: 'auto', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 16, background: '#080C10' }}>
+          <div ref={imgAreaRef} style={{ flex: 1, overflow: 'auto', display: 'flex', alignItems: zoom === 'fit-page' ? 'center' : 'flex-start', justifyContent: 'center', padding: zoom === 'fit-page' ? 8 : 16, background: '#080C10' }}>
             {selDoc === null && (
               <div style={{ color: P.dim, fontFamily: mono, fontSize: 13, marginTop: 80 }}>← Select a document</div>
             )}
@@ -435,9 +441,18 @@ function App() {
             )}
             {selDoc !== null && !imgLoading && !error && imgSrc && (
               <img
+                ref={imgElRef}
                 src={imgSrc}
                 alt={currentDoc.pages[selPage]}
-                style={{ maxWidth: zoom === 1 ? '100%' : 'none', width: zoom !== 1 ? (zoom * 100) + '%' : undefined, height: 'auto', display: 'block', boxShadow: '0 4px 30px rgba(0,0,0,0.6)' }}
+                style={{
+                  display: 'block',
+                  boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
+                  maxWidth: zoom === 'fit-page' ? '100%' : zoom === 'fit-width' ? '100%' : 'none',
+                  maxHeight: zoom === 'fit-page' ? '100%' : 'none',
+                  width: typeof zoom === 'number' ? (zoom * 100) + '%' : undefined,
+                  height: 'auto',
+                  objectFit: 'contain',
+                }}
               />
             )}
             {selDoc !== null && !imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && (
