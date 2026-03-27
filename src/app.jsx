@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.8 · 2026-03-27';
+const APP_VERSION = 'v1.5.9 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -360,7 +360,7 @@ function ResizableTh({ colKey, width, onResize, onSort, active, sortDir, align, 
 }
 
 // ── VirtualGrid ───────────────────────────────────────────────────────────
-function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap, hiddenCols, colWidths, sortCol, sortDir, onSort, showColMenu, setShowColMenu, setHiddenCols, setColWidths }) {
+function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap, hiddenCols, colWidths, sortCol, sortDir, onSort, setColWidths }) {
   const containerRef = React.useRef(null);
   const [scrollTop, setScrollTop] = React.useState(0);
   const [height, setHeight]       = React.useState(400);
@@ -404,59 +404,6 @@ function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMult
         {/* ── Sticky header ── */}
         <thead style={{ position: 'sticky', top: 0, zIndex: 2 }}>
           <tr style={{ background: P.surface, borderBottom: '2px solid ' + P.border }}>
-            {/* Columns button — far left, prominent */}
-            <th style={{ width: 80, padding: 0, borderRight: '2px solid ' + P.border, background: P.surface, position: 'relative' }}>
-              <button onClick={e => { e.stopPropagation(); setShowColMenu(v => !v); }}
-                title="Show/hide columns"
-                style={{
-                  width: '100%', height: '100%', border: 'none', cursor: 'pointer',
-                  background: showColMenu ? P.accentGlow : 'transparent',
-                  color: showColMenu ? P.accent : P.dim,
-                  fontSize: 11, fontWeight: 600, padding: '6px 6px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-                }}>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
-                  <rect x="0.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                  <rect x="4.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                  <rect x="8.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                </svg>
-                Columns
-              </button>
-              {showColMenu && (
-                <div onClick={e => e.stopPropagation()} style={{ position: 'absolute', top: '100%', left: 0, marginTop: 2, background: P.surface, border: '1px solid ' + P.accent + '88', borderRadius: 8, zIndex: 300, minWidth: 200, boxShadow: '0 8px 32px rgba(0,0,0,0.6)', padding: '0 0 6px' }}>
-                  {/* Header */}
-                  <div style={{ padding: '8px 12px', borderBottom: '1px solid ' + P.border, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontFamily: mono, fontSize: 11, color: P.accent, fontWeight: 700 }}>Columns</span>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button onClick={() => setHiddenCols(new Set())} style={{ background: 'transparent', border: 'none', color: P.accent, cursor: 'pointer', fontSize: 10, fontFamily: mono, padding: 0 }}>All</button>
-                      <button onClick={() => {
-                        const allKeys = ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'];
-                        setHiddenCols(new Set(allKeys));
-                      }} style={{ background: 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 10, fontFamily: mono, padding: 0 }}>None</button>
-                    </div>
-                  </div>
-                  {/* Column list */}
-                  <div style={{ maxHeight: 260, overflowY: 'auto' }}>
-                    {[['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
-                      const vis = !hidden(key);
-                      return (
-                        <div key={key}
-                          onClick={() => setHiddenCols(prev => { const n = new Set(prev); vis ? n.add(key) : n.delete(key); return n; })}
-                          style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 14px', cursor: 'pointer' }}
-                          onMouseEnter={e => e.currentTarget.style.background = P.rowHov}
-                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                          <div style={{ width: 15, height: 15, borderRadius: 3, border: '2px solid ' + (vis ? P.accent : P.border), background: vis ? P.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.1s' }}>
-                            {vis && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="#0E1117" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                          </div>
-                          <span style={{ fontFamily: mono, fontSize: 11, color: vis ? P.text : P.dim }}>{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </th>
-            {/* Row number */}
             <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
             {!hidden('tag') && <ResizableTh colKey="tag" width={cw('tag')} onResize={w => setColWidths(p => ({ ...p, tag: w }))} onSort={() => onSort('tag')} active={sortCol === 'tag'} sortDir={sortDir}>Tag</ResizableTh>}
             {!hidden('docid') && <ResizableTh colKey="docid" width={cw('docid')} onResize={w => setColWidths(p => ({ ...p, docid: w }))} onSort={() => onSort(-1)} active={sortCol === -1} sortDir={sortDir}>DOCID</ResizableTh>}
@@ -482,7 +429,6 @@ function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMult
                 onClick={e => onMultiSelect ? onMultiSelect(row.docId, e) : onSelect(row.docId)}
                 onMouseEnter={() => setHovRow(ri)} onMouseLeave={() => setHovRow(null)}
                 style={{ height: ROW_H, background: bg, cursor: 'pointer', borderBottom: '1px solid ' + P.border }}>
-                <td style={{ width: 80, borderRight: '2px solid ' + P.border }} />
                 <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
                 {!hidden('tag') && (
                   <td style={{ width: cw('tag'), padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center', overflow: 'hidden' }}>
@@ -1248,8 +1194,8 @@ function App() {
 
         {/* ── Grid ── */}
         <div style={{ width: GRID_W, transition: 'width 0.12s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? '1px solid ' + P.border : 'none' }}>
-          {/* Tag filter bar — matches PST style */}
-          <div style={{ display: 'flex', gap: 4, padding: '4px 8px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface, flexWrap: 'wrap', alignItems: 'center' }}>
+          {/* Tag filter bar + Columns button on the right */}
+          <div style={{ display: 'flex', gap: 4, padding: '4px 8px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface, alignItems: 'center' }}>
             {[['all', 'All', P.dim, gridRows.length], ['responsive', 'Responsive', P.green, rCnt], ['not_responsive', 'Not Responsive', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
               const isActive = tagFilter === f;
               return (
@@ -1263,14 +1209,58 @@ function App() {
                 </button>
               );
             })}
+            <div style={{ flex: 1 }} />
+            {/* Columns button — right side of filter bar */}
+            <div style={{ position: 'relative' }}>
+              <button onClick={e => { e.stopPropagation(); setShowColMenu(v => !v); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 4,
+                  border: '1px solid ' + (showColMenu ? P.accent : P.border),
+                  background: showColMenu ? P.accentGlow : 'transparent',
+                  color: showColMenu ? P.accent : P.dim, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: mono,
+                }}>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                  <rect x="0.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                  <rect x="4.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                  <rect x="8.5" y="0.5" width="3" height="11" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                </svg>
+                Columns
+              </button>
+              {showColMenu && (
+                <div onClick={e => e.stopPropagation()} style={{ position: 'absolute', top: '100%', right: 0, marginTop: 3, background: P.surface, border: '1px solid ' + P.accent + '88', borderRadius: 8, zIndex: 300, minWidth: 200, boxShadow: '0 8px 32px rgba(0,0,0,0.6)', padding: '0 0 6px' }}>
+                  <div style={{ padding: '8px 12px', borderBottom: '1px solid ' + P.border, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontFamily: mono, fontSize: 11, color: P.accent, fontWeight: 700 }}>Columns</span>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => setHiddenCols(new Set())} style={{ background: 'transparent', border: 'none', color: P.accent, cursor: 'pointer', fontSize: 10, fontFamily: mono, padding: 0 }}>All</button>
+                      <button onClick={() => setHiddenCols(new Set(['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages']))} style={{ background: 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 10, fontFamily: mono, padding: 0 }}>None</button>
+                    </div>
+                  </div>
+                  <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                    {[['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
+                      const vis = !(hiddenCols && hiddenCols.has(key));
+                      return (
+                        <div key={key} onClick={() => setHiddenCols(prev => { const n = new Set(prev); vis ? n.add(key) : n.delete(key); return n; })}
+                          style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 14px', cursor: 'pointer' }}
+                          onMouseEnter={e => e.currentTarget.style.background = P.rowHov}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          <div style={{ width: 15, height: 15, borderRadius: 3, border: '2px solid ' + (vis ? P.accent : P.border), background: vis ? P.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.1s' }}>
+                            {vis && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="#0E1117" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span style={{ fontFamily: mono, fontSize: 11, color: vis ? P.text : P.dim }}>{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <VirtualGrid
             rows={filteredRows} headers={headers} selDocId={selDocId}
             selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect}
             tagMap={tagMap} hiddenCols={hiddenCols} colWidths={colWidths}
             sortCol={sortCol} sortDir={sortDir} onSort={toggleSort}
-            showColMenu={showColMenu} setShowColMenu={setShowColMenu}
-            setHiddenCols={setHiddenCols} setColWidths={setColWidths}
+            setColWidths={setColWidths}
           />
         </div>
 

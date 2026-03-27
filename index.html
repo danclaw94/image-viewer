@@ -21,7 +21,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.5.8 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.5.9 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -590,9 +590,6 @@ function VirtualGrid({
   sortCol,
   sortDir,
   onSort,
-  showColMenu,
-  setShowColMenu,
-  setHiddenCols,
   setColWidths
 }) {
   const containerRef = React.useRef(null);
@@ -655,181 +652,6 @@ function VirtualGrid({
       borderBottom: '2px solid ' + P.border
     }
   }, /*#__PURE__*/React.createElement("th", {
-    style: {
-      width: 80,
-      padding: 0,
-      borderRight: '2px solid ' + P.border,
-      background: P.surface,
-      position: 'relative'
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: e => {
-      e.stopPropagation();
-      setShowColMenu(v => !v);
-    },
-    title: "Show/hide columns",
-    style: {
-      width: '100%',
-      height: '100%',
-      border: 'none',
-      cursor: 'pointer',
-      background: showColMenu ? P.accentGlow : 'transparent',
-      color: showColMenu ? P.accent : P.dim,
-      fontSize: 11,
-      fontWeight: 600,
-      padding: '6px 6px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 4
-    }
-  }, /*#__PURE__*/React.createElement("svg", {
-    width: "12",
-    height: "12",
-    viewBox: "0 0 12 12",
-    fill: "none",
-    style: {
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("rect", {
-    x: "0.5",
-    y: "0.5",
-    width: "3",
-    height: "11",
-    rx: "1",
-    stroke: "currentColor",
-    strokeWidth: "1.2"
-  }), /*#__PURE__*/React.createElement("rect", {
-    x: "4.5",
-    y: "0.5",
-    width: "3",
-    height: "11",
-    rx: "1",
-    stroke: "currentColor",
-    strokeWidth: "1.2"
-  }), /*#__PURE__*/React.createElement("rect", {
-    x: "8.5",
-    y: "0.5",
-    width: "3",
-    height: "11",
-    rx: "1",
-    stroke: "currentColor",
-    strokeWidth: "1.2"
-  })), "Columns"), showColMenu && /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    style: {
-      position: 'absolute',
-      top: '100%',
-      left: 0,
-      marginTop: 2,
-      background: P.surface,
-      border: '1px solid ' + P.accent + '88',
-      borderRadius: 8,
-      zIndex: 300,
-      minWidth: 200,
-      boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-      padding: '0 0 6px'
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '8px 12px',
-      borderBottom: '1px solid ' + P.border,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between'
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 11,
-      color: P.accent,
-      fontWeight: 700
-    }
-  }, "Columns"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setHiddenCols(new Set()),
-    style: {
-      background: 'transparent',
-      border: 'none',
-      color: P.accent,
-      cursor: 'pointer',
-      fontSize: 10,
-      fontFamily: mono,
-      padding: 0
-    }
-  }, "All"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      const allKeys = ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'];
-      setHiddenCols(new Set(allKeys));
-    },
-    style: {
-      background: 'transparent',
-      border: 'none',
-      color: P.dim,
-      cursor: 'pointer',
-      fontSize: 10,
-      fontFamily: mono,
-      padding: 0
-    }
-  }, "None"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      maxHeight: 260,
-      overflowY: 'auto'
-    }
-  }, [['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
-    const vis = !hidden(key);
-    return /*#__PURE__*/React.createElement("div", {
-      key: key,
-      onClick: () => setHiddenCols(prev => {
-        const n = new Set(prev);
-        vis ? n.add(key) : n.delete(key);
-        return n;
-      }),
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 9,
-        padding: '6px 14px',
-        cursor: 'pointer'
-      },
-      onMouseEnter: e => e.currentTarget.style.background = P.rowHov,
-      onMouseLeave: e => e.currentTarget.style.background = 'transparent'
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 15,
-        height: 15,
-        borderRadius: 3,
-        border: '2px solid ' + (vis ? P.accent : P.border),
-        background: vis ? P.accent : 'transparent',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-        transition: 'all 0.1s'
-      }
-    }, vis && /*#__PURE__*/React.createElement("svg", {
-      width: "9",
-      height: "7",
-      viewBox: "0 0 9 7",
-      fill: "none"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M1 3.5L3.5 6L8 1",
-      stroke: "#0E1117",
-      strokeWidth: "1.8",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }))), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontFamily: mono,
-        fontSize: 11,
-        color: vis ? P.text : P.dim
-      }
-    }, label));
-  })))), /*#__PURE__*/React.createElement("th", {
     style: {
       width: 44,
       padding: '6px 8px',
@@ -905,11 +727,6 @@ function VirtualGrid({
         borderBottom: '1px solid ' + P.border
       }
     }, /*#__PURE__*/React.createElement("td", {
-      style: {
-        width: 80,
-        borderRight: '2px solid ' + P.border
-      }
-    }), /*#__PURE__*/React.createElement("td", {
       style: {
         width: 44,
         padding: '0 8px',
@@ -2398,7 +2215,6 @@ function App() {
       borderBottom: '1px solid ' + P.border,
       flexShrink: 0,
       background: P.surface,
-      flexWrap: 'wrap',
       alignItems: 'center'
     }
   }, [['all', 'All', P.dim, gridRows.length], ['responsive', 'Responsive', P.green, rCnt], ['not_responsive', 'Not Responsive', P.red, nrCnt], ['untagged', 'Untagged', P.dim, untaggedCnt]].map(([f, label, color, count]) => {
@@ -2418,7 +2234,177 @@ function App() {
         fontFamily: mono
       }
     }, label, " (", count, ")");
-  })), /*#__PURE__*/React.createElement(VirtualGrid, {
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: e => {
+      e.stopPropagation();
+      setShowColMenu(v => !v);
+    },
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 4,
+      padding: '2px 8px',
+      borderRadius: 4,
+      border: '1px solid ' + (showColMenu ? P.accent : P.border),
+      background: showColMenu ? P.accentGlow : 'transparent',
+      color: showColMenu ? P.accent : P.dim,
+      cursor: 'pointer',
+      fontSize: 11,
+      fontWeight: 600,
+      fontFamily: mono
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "11",
+    height: "11",
+    viewBox: "0 0 12 12",
+    fill: "none",
+    style: {
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: "0.5",
+    y: "0.5",
+    width: "3",
+    height: "11",
+    rx: "1",
+    stroke: "currentColor",
+    strokeWidth: "1.2"
+  }), /*#__PURE__*/React.createElement("rect", {
+    x: "4.5",
+    y: "0.5",
+    width: "3",
+    height: "11",
+    rx: "1",
+    stroke: "currentColor",
+    strokeWidth: "1.2"
+  }), /*#__PURE__*/React.createElement("rect", {
+    x: "8.5",
+    y: "0.5",
+    width: "3",
+    height: "11",
+    rx: "1",
+    stroke: "currentColor",
+    strokeWidth: "1.2"
+  })), "Columns"), showColMenu && /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      position: 'absolute',
+      top: '100%',
+      right: 0,
+      marginTop: 3,
+      background: P.surface,
+      border: '1px solid ' + P.accent + '88',
+      borderRadius: 8,
+      zIndex: 300,
+      minWidth: 200,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+      padding: '0 0 6px'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '8px 12px',
+      borderBottom: '1px solid ' + P.border,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between'
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: mono,
+      fontSize: 11,
+      color: P.accent,
+      fontWeight: 700
+    }
+  }, "Columns"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setHiddenCols(new Set()),
+    style: {
+      background: 'transparent',
+      border: 'none',
+      color: P.accent,
+      cursor: 'pointer',
+      fontSize: 10,
+      fontFamily: mono,
+      padding: 0
+    }
+  }, "All"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setHiddenCols(new Set(['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'])),
+    style: {
+      background: 'transparent',
+      border: 'none',
+      color: P.dim,
+      cursor: 'pointer',
+      fontSize: 10,
+      fontFamily: mono,
+      padding: 0
+    }
+  }, "None"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxHeight: 260,
+      overflowY: 'auto'
+    }
+  }, [['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
+    const vis = !(hiddenCols && hiddenCols.has(key));
+    return /*#__PURE__*/React.createElement("div", {
+      key: key,
+      onClick: () => setHiddenCols(prev => {
+        const n = new Set(prev);
+        vis ? n.add(key) : n.delete(key);
+        return n;
+      }),
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 9,
+        padding: '6px 14px',
+        cursor: 'pointer'
+      },
+      onMouseEnter: e => e.currentTarget.style.background = P.rowHov,
+      onMouseLeave: e => e.currentTarget.style.background = 'transparent'
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 15,
+        height: 15,
+        borderRadius: 3,
+        border: '2px solid ' + (vis ? P.accent : P.border),
+        background: vis ? P.accent : 'transparent',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        transition: 'all 0.1s'
+      }
+    }, vis && /*#__PURE__*/React.createElement("svg", {
+      width: "9",
+      height: "7",
+      viewBox: "0 0 9 7",
+      fill: "none"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M1 3.5L3.5 6L8 1",
+      stroke: "#0E1117",
+      strokeWidth: "1.8",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }))), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 11,
+        color: vis ? P.text : P.dim
+      }
+    }, label));
+  }))))), /*#__PURE__*/React.createElement(VirtualGrid, {
     rows: filteredRows,
     headers: headers,
     selDocId: selDocId,
@@ -2431,9 +2417,6 @@ function App() {
     sortCol: sortCol,
     sortDir: sortDir,
     onSort: toggleSort,
-    showColMenu: showColMenu,
-    setShowColMenu: setShowColMenu,
-    setHiddenCols: setHiddenCols,
     setColWidths: setColWidths
   })), selDocId && /*#__PURE__*/React.createElement("div", {
     style: {
