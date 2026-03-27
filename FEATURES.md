@@ -99,7 +99,11 @@ Each filter shows a count in parentheses. The count updates in real time as you 
 
 The **Columns** button (column icon) is on the right side of the tag filter bar. Click it to open a dropdown with a scrollable list of all columns. Toggle any column on or off with a checkbox. Use **All** to show all columns or **None** to hide all.
 
-Column visibility is saved in the session and restored on resume.
+Column visibility and widths are saved in the session and restored on resume.
+
+### Resizing Columns
+
+Hover over the right edge of any column header. The cursor changes to a resize arrow and the edge highlights in blue. Drag to resize. Minimum width: 40px.
 
 ---
 
@@ -215,18 +219,58 @@ The count `X / Y` shows filtered results vs. total. Search combines with the tag
 
 ---
 
-## Export DAT
+## Export
 
-After tagging documents, click **Export DAT** in the header (greyed out until at least one document is tagged).
+After tagging documents, click **Export DAT** in the header (greyed out until at least one document is tagged). A modal opens with two export modes:
 
-A modal lets you configure the export:
-- **Tag Column Name** — The column header for the responsiveness field (default: "Responsiveness")
-- A summary shows how many documents are tagged and their breakdown
+---
 
-The exported DAT:
-- Appends a new column to the existing metadata (if a DAT was loaded), or creates a minimal 2-column DAT (DOCID + tag column) if no DAT was loaded
-- Tag values: `"Responsive"`, `"Not Responsive"`, or blank for untagged
-- Preserves the original encoding (UTF-8, UTF-16LE, UTF-16BE) with BOM
+### Mode 1: Tag Column Only (📋)
+
+Appends a responsiveness tag column to the existing DAT file and downloads it. No images are exported.
+
+**Options:**
+- **Tag Column Name** — The column header for the tag field (default: "Responsiveness")
+
+**Output:** A single `.dat` file download containing all original records plus the tag column.
+
+- Tag values: `"Responsive"`, `"Not Responsible"`, or blank for untagged
+- Preserves the original DAT encoding (UTF-8, UTF-16LE, UTF-16BE) with BOM
+
+---
+
+### Mode 2: Full Production Export (📦)
+
+Exports a complete, standalone production set for the selected tagged documents. All files are written directly to a folder you choose.
+
+**Steps:**
+1. Enter a **Production Name** (e.g. `PROD001`). This becomes the base name for all output files.
+2. Toggle which tags to include — **Responsive**, **Not Responsible**, or both. Live counts show how many documents and images will be exported.
+3. Set the **Tag Column Name** for the DAT.
+4. Click **Choose Folder & Export →** — a folder picker opens. Select your output directory.
+
+**What gets created:**
+
+| File | Contents |
+|------|----------|
+| `PROD001.opt` | New OPT file with paths pointing to `PROD001_IMAGES\` |
+| `PROD001.dat` | Filtered DAT with only the exported records, plus the tag column |
+| `PROD001_IMAGES/` | All image files copied from the source folder |
+| `PROD001_QC_REPORT.txt` | Automated QC verification report (see below) |
+
+**Progress:** A modal overlay shows the current phase (Copying images… / Writing OPT… / Writing DAT… / Writing QC report…) with a progress bar and count.
+
+**Production QC Report (`_QC_REPORT.txt`):**
+
+Written automatically to the output folder immediately after export. Contains:
+- Production name, timestamp, source file names
+- Document count, total image pages, images successfully copied, missing/failed images
+- DAT row count vs. document count match (PASS ✓ / FAIL ✗)
+- Images present check (PASS ✓ / FAIL ✗)
+- List of output files with counts
+- Full list of any missing or failed images with doc ID, page number, and original path
+
+**Toast result:** Green if all images copied successfully; orange with a count if any images were missing (details in the QC report).
 
 ---
 
@@ -262,9 +306,9 @@ The QC scanner automatically runs when the viewer opens (configurable in Setting
 |-------|-----------------|
 | **Missing Image Files** | Pages listed in the OPT with no corresponding file in the image folder |
 | **OPT / DAT Mismatches** | Documents in OPT but not in DAT, or in DAT but not in OPT |
-| **Bates Sequence Gaps** | Gaps in the numeric sequence of Bates numbers |
+| **Bates Sequence Gaps** | Gaps in the numeric sequence of Bates numbers (e.g. DOC0047 followed by DOC0051) |
 | **Duplicate Document IDs** | The same Bates number appearing more than once in the OPT |
-| **Zero-Page Documents** | Documents with no image pages |
+| **Zero-Page Documents** | Documents with no image pages listed in the OPT |
 
 ### QC Banner
 
@@ -278,15 +322,15 @@ The QC scanner automatically runs when the viewer opens (configurable in Setting
 
 Click **Export ▾** in the QC banner to choose the export format:
 
-**📄 Export PDF** — A professionally formatted report that includes:
-- Header with vDiscovery branding and generation timestamp
+**📄 Export PDF** — A professionally formatted, graphical report that includes:
+- Dark branded header with vDiscovery logo and generation timestamp
 - File info row (OPT, DAT, image folder names)
-- Summary stat cards: Documents, Total Images, Avg Pages/Doc, Max Pages/Doc, Missing Images, Total QC Issues
-- Image format breakdown bar chart (TIFF/JPEG/PNG/etc. with counts and percentages)
-- Page distribution bar chart (1-page, 2–5, 6–10, 11–50, 50+ documents)
-- DAT column coverage — each column with a color-coded fill percentage dot
-- Detailed issue sections with colored headers for each issue type
-- Page footers with page numbers
+- **6 summary stat cards** — Documents, Total Images, Avg Pages/Doc, Max Pages/Doc, Missing Images (red if any), Total QC Issues (orange/green)
+- **Image format breakdown** — horizontal bar chart showing TIFF/JPEG/PNG/PDF counts and percentages of total
+- **Page distribution** — bar chart showing how many documents have 1 / 2–5 / 6–10 / 11–50 / 50+ pages
+- **DAT column coverage** — every column listed with a color-coded fill-rate dot (green >80%, orange >40%, red otherwise)
+- **Issue detail sections** — color-banded headers for each issue type; truncated at 50 with a note to use CSV for the full list
+- **Page footers** — "vDiscovery Image Viewer QC Report • Confidential" + page X of Y on every page
 
 **📊 Export CSV** — A flat CSV table with columns: Issue Type, Doc ID, Detail. Includes all issue types. Useful for importing into Excel or a review platform.
 
@@ -378,3 +422,23 @@ git checkout source
 ### Version
 
 See `APP_VERSION` at the top of `src/app.jsx`. Format: `'vX.Y.Z · YYYY-MM-DD'`. Must be bumped on every push.
+
+**Current version:** v1.7.0 · 2026-03-27
+
+---
+
+## Changelog Summary
+
+| Version | Key additions |
+|---------|--------------|
+| v1.0.0 | Initial release — OPT/DAT/folder loading, grid, image viewer |
+| v1.1.0 | Landing stays open until Open Viewer → clicked |
+| v1.2.0 | Fit page / fit width zoom modes |
+| v1.3.0 | Full DAT grid layout with sort |
+| v1.4.0 | Virtual scroll, LRU cache, background prefetch |
+| v1.5.0 | QC dashboard, tagging (R/NR), thumbnails, print PDF, rotation, multi-select, jump, settings, session resume |
+| v1.5.4 | Resizable columns, show/hide columns dropdown |
+| v1.5.5 | Unified table with sticky header (alignment fix) |
+| v1.5.8 | One-click session resume with file permission request |
+| v1.6.0 | Enhanced QC (dupe IDs, zero-page docs, image stats); graphical PDF report |
+| v1.7.0 | Full production export (OPT + DAT + images + QC report to output folder) |
