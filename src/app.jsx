@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.7 · 2026-03-27';
+const APP_VERSION = 'v1.5.8 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -235,6 +235,20 @@ function qcBatesGaps(docs) {
   }
   return issues;
 }
+
+// ── Persisted file handles (module-level, structured-clone safe via idb-like approach) ──
+// We keep handles in memory; metadata in localStorage for resume prompt across page loads.
+const RESUME_KEY = 'vdiscovery-iv-resume';
+function saveResumeInfo(info) {
+  try { localStorage.setItem(RESUME_KEY, JSON.stringify({ optFile: info.optFile, datFile: info.datFile, imgDir: info.imgDir })); } catch {}
+}
+function loadResumeInfo() {
+  try { const s = localStorage.getItem(RESUME_KEY); return s ? JSON.parse(s) : null; } catch { return null; }
+}
+function clearResumeInfo() { try { localStorage.removeItem(RESUME_KEY); } catch {} }
+
+// Module-level handle store — survives re-renders, lost on tab close (that's fine)
+const _handles = { opt: null, dat: null, dir: null };
 
 // ── Palette + constants ───────────────────────────────────────────────────
 const P = {
@@ -568,8 +582,13 @@ function App() {
 
   const imgAreaRef   = React.useRef(null);
   const fileIndexRef = React.useRef({});
-  const sessionFileRef = React.useRef(null);  // for load-session file input on landing
+  const sessionFileRef = React.useRef(null);
   fileIndexRef.current = fileIndex;
+
+  // Resume info from previous session
+  const [resumeInfo,  setResumeInfo]  = React.useState(() => loadResumeInfo());
+  const [resumeError, setResumeError] = React.useState(null);
+  const [resuming,    setResuming]    = React.useState(false);
 
   const showNotice = React.useCallback((type, msg, ms = 3000) => {
     setStateNotice({ type, msg });
@@ -605,16 +624,24 @@ function App() {
     } catch {}
   }, [tagMap, tagFilter, selDocId, search, hiddenCols, colWidths, launched, optFile]);
 
+  const persistResumeInfo = (updates) => {
+    const current = loadResumeInfo() || {};
+    const next = { ...current, ...updates };
+    saveResumeInfo(next);
+    setResumeInfo(next);
+  };
+
   // ── Load OPT ──
-  const loadOpt = async (file) => {
+  const loadOpt = async (file, handle = null) => {
     const buf = await file.arrayBuffer();
     const text = new TextDecoder(detectEncoding(buf)).decode(buf);
     setDocs(parseOpt(text)); setOptFile(file.name);
     setSelDocId(null); setSelPage(0); setImgSrc(null); setQcResults(null);
+    if (handle) { _handles.opt = handle; persistResumeInfo({ optFile: file.name }); }
   };
 
   // ── Load DAT ──
-  const loadDat = async (file) => {
+  const loadDat = async (file, handle = null) => {
     const buf = await file.arrayBuffer();
     const enc = detectEncoding(buf);
     const text = new TextDecoder(enc).decode(buf);
@@ -623,6 +650,7 @@ function App() {
     const hdrs = parseRow(lines[0]);
     setHeaders(hdrs); setDatEncoding(enc);
     setAllRows(lines.slice(1).map(l => ({ fields: parseRow(l) }))); setDatFile(file.name);
+    if (handle) { _handles.dat = handle; persistResumeInfo({ datFile: file.name }); }
   };
 
   // ── Index image dir ──
@@ -637,7 +665,49 @@ function App() {
       }
     }
     await walk(dirHandle, '');
+    _handles.dir = dirHandle;
     setFileIndex(idx); setImgDir(dirHandle.name); setLoading(false);
+    persistResumeInfo({ imgDir: dirHandle.name });
+  };
+
+  // ── Resume previous session ──
+  const handleResume = async () => {
+    setResumeError(null);
+    setResuming(true);
+    try {
+      // Request permission + reload all three handles
+      if (_handles.opt) {
+        const perm = await _handles.opt.requestPermission({ mode: 'read' });
+        if (perm === 'granted') {
+          const f = await _handles.opt.getFile();
+          await loadOpt(f); // no handle arg — already stored
+        }
+      } else {
+        // No handle in memory — need to re-pick OPT
+        if (window.showOpenFilePicker) {
+          const [h] = await window.showOpenFilePicker({ types: [{ description: 'OPT Files', accept: { 'text/plain': ['.opt', '.OPT', '.txt'] } }], multiple: false });
+          const f = await h.getFile();
+          _handles.opt = h;
+          await loadOpt(f);
+        }
+      }
+      if (_handles.dat) {
+        const perm = await _handles.dat.requestPermission({ mode: 'read' });
+        if (perm === 'granted') { const f = await _handles.dat.getFile(); await loadDat(f); }
+      }
+      if (_handles.dir) {
+        const perm = await _handles.dir.requestPermission({ mode: 'read' });
+        if (perm === 'granted') await indexDir(_handles.dir);
+      } else {
+        // Need to re-pick directory
+        const h = await window.showDirectoryPicker({ mode: 'read' });
+        await indexDir(h);
+      }
+      setLaunched(true);
+    } catch (e) {
+      if (e.name !== 'AbortError') setResumeError('Could not resume: ' + e.message);
+    }
+    setResuming(false);
   };
 
   // ── Grid data ──
@@ -988,6 +1058,8 @@ function App() {
     setQcResults(null); setQcDismissed(false);
     imgCache.forEach(url => URL.revokeObjectURL(url)); imgCache.clear();
     thumbCache.forEach(url => URL.revokeObjectURL(url)); thumbCache.clear();
+    _handles.opt = null; _handles.dat = null; _handles.dir = null;
+    clearResumeInfo(); setResumeInfo(null); setResumeError(null);
   };
 
   // ── Landing ──────────────────────────────────────────────────────────────
@@ -999,9 +1071,36 @@ function App() {
           <img src="vdiscovery-white.png" alt="vDiscovery" style={{ height: 64 }} />
         </a>
         <div style={{ fontSize: 22, fontWeight: 700, color: P.text }}>Image Viewer</div>
+        {/* Resume card — shown when a previous session exists */}
+        {resumeInfo && resumeInfo.optFile && (
+          <div style={{ background: P.surface, border: '1px solid ' + P.accent + '66', borderRadius: 12, padding: '18px 24px', maxWidth: 420, width: '100%', textAlign: 'center' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: P.accent, marginBottom: 6 }}>↩ Resume Previous Session</div>
+            <div style={{ fontFamily: mono, fontSize: 11, color: P.dim, marginBottom: 12, lineHeight: 1.7 }}>
+              {resumeInfo.optFile}
+              {resumeInfo.datFile && <><br />{resumeInfo.datFile}</>}
+              {resumeInfo.imgDir && <><br />📁 {resumeInfo.imgDir}</>}
+            </div>
+            {resumeError && <div style={{ color: P.red, fontSize: 11, fontFamily: mono, marginBottom: 8 }}>{resumeError}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button onClick={handleResume} disabled={resuming}
+                style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: P.accent, color: '#fff', fontWeight: 700, fontSize: 13, cursor: resuming ? 'default' : 'pointer', opacity: resuming ? 0.7 : 1 }}>
+                {resuming ? 'Resuming…' : 'Resume →'}
+              </button>
+              <button onClick={() => { clearResumeInfo(); setResumeInfo(null); }}
+                style={{ padding: '8px 14px', borderRadius: 6, border: '1px solid ' + P.border, background: 'transparent', color: P.dim, fontSize: 12, cursor: 'pointer' }}>
+                Start fresh
+              </button>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
-          <FileCard label="OPT File" hint="Required" color={P.accent} loaded={optFile} onSelect={async f => { try { await loadOpt(f); } catch(e) { setError(e.message); }}} accept=".opt,.OPT,.txt" />
-          <FileCard label="DAT File" hint="Optional — metadata" color={P.green} loaded={datFile} onSelect={async f => { try { await loadDat(f); } catch(e) { setError(e.message); }}} accept=".dat,.DAT,.txt" />
+          <FileCard label="OPT File" hint="Required" color={P.accent} loaded={optFile}
+            onSelect={async (f, h) => { try { await loadOpt(f, h); } catch(e) { setError(e.message); }}}
+            accept=".opt,.OPT,.txt" useFilePicker />
+          <FileCard label="DAT File" hint="Optional — metadata" color={P.green} loaded={datFile}
+            onSelect={async (f, h) => { try { await loadDat(f, h); } catch(e) { setError(e.message); }}}
+            accept=".dat,.DAT,.txt" useFilePicker />
           <DirCard label="Image Folder" hint="Required" loaded={imgDir} loading={loading} onSelect={async () => {
             try { const h = await window.showDirectoryPicker({ mode: 'read' }); await indexDir(h); }
             catch(e) { if (e.name !== 'AbortError') setError(e.message); }
@@ -1370,14 +1469,25 @@ function App() {
   );
 }
 
-function FileCard({ label, hint, color, loaded, onSelect, accept }) {
+function FileCard({ label, hint, color, loaded, onSelect, accept, useFilePicker }) {
   const ref = React.useRef();
+  const handleClick = async () => {
+    if (useFilePicker && window.showOpenFilePicker) {
+      try {
+        const [h] = await window.showOpenFilePicker({ multiple: false });
+        const f = await h.getFile();
+        onSelect(f, h);
+      } catch (e) { if (e.name !== 'AbortError') ref.current && ref.current.click(); }
+    } else {
+      ref.current && ref.current.click();
+    }
+  };
   return (
-    <div onClick={() => ref.current && ref.current.click()} style={{ width: 190, padding: '20px 16px', borderRadius: 10, border: '2px dashed ' + (loaded ? color : '#30363D'), background: loaded ? 'rgba(88,166,255,0.06)' : '#161B22', textAlign: 'center', cursor: 'pointer' }}>
+    <div onClick={handleClick} style={{ width: 190, padding: '20px 16px', borderRadius: 10, border: '2px dashed ' + (loaded ? color : '#30363D'), background: loaded ? 'rgba(88,166,255,0.06)' : '#161B22', textAlign: 'center', cursor: 'pointer' }}>
       <div style={{ fontSize: 26, marginBottom: 6 }}>{loaded ? '✅' : '📄'}</div>
       <div style={{ fontWeight: 600, color: loaded ? color : '#E6EDF3', marginBottom: 3, fontSize: 14 }}>{label}</div>
       <div style={{ fontSize: 11, color: '#8B949E' }}>{loaded || hint}</div>
-      <input ref={ref} type="file" accept={accept} style={{ display: 'none' }} onChange={e => e.target.files[0] && onSelect(e.target.files[0])} />
+      <input ref={ref} type="file" accept={accept} style={{ display: 'none' }} onChange={e => e.target.files[0] && onSelect(e.target.files[0], null)} />
     </div>
   );
 }
