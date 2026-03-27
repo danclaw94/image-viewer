@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.1 · 2026-03-27';
+const APP_VERSION = 'v1.5.2 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -445,6 +445,7 @@ function App() {
   const [jumpInput,    setJumpInput]    = React.useState('');
   const [showJump,     setShowJump]     = React.useState(false);
   const [stateNotice,  setStateNotice]  = React.useState(null);
+  const [qcExportMenu, setQcExportMenu] = React.useState(false);
 
   const imgAreaRef   = React.useRef(null);
   const fileIndexRef = React.useRef({});
@@ -773,6 +774,24 @@ function App() {
     window.open(doc.output('bloburl'), '_blank');
   }, [qcResults, optFile, datFile]);
 
+  // ── Export QC report as CSV ──
+  const exportQcCsv = React.useCallback(() => {
+    const rows = [['Issue Type', 'Doc ID', 'Detail']];
+    for (const i of qcResults.missingFiles)
+      rows.push(['Missing File', i.docId, 'Page ' + (i.page + 1) + ': ' + i.path]);
+    for (const i of qcResults.datMismatches)
+      rows.push([i.type === 'opt_only' ? 'OPT Only' : 'DAT Only', i.docId, i.type === 'opt_only' ? 'In OPT but not DAT' : 'In DAT but not OPT']);
+    for (const g of qcResults.batesGaps)
+      rows.push(['Bates Gap', g.afterDocId, g.from + (g.count > 1 ? ' – ' + g.to : '') + ' (' + g.count + ' missing)']);
+    const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = (optFile ? optFile.replace(/\.[^.]+$/, '') : 'qc') + '_report.csv';
+    a.click(); URL.revokeObjectURL(url);
+    showNotice('ok', 'QC report exported as CSV');
+  }, [qcResults, optFile, showNotice]);
+
   // ── Export tagged DAT ──
   const exportTaggedDat = React.useCallback(() => {
     const col = exportColName.trim() || 'Responsiveness';
@@ -945,7 +964,24 @@ function App() {
                   : 'No issues found'
                 }</span>
                 {qcResults.totalIssues > 0 && <button onClick={() => setQcExpanded(v => !v)} style={{ background: 'transparent', border: '1px solid ' + P.orange + '66', color: P.orange, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>{qcExpanded ? 'Hide' : 'View'}</button>}
-                {qcResults.totalIssues > 0 && <button onClick={exportQcReport} style={{ background: 'transparent', border: '1px solid ' + P.orange + '66', color: P.orange, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>Export PDF</button>}
+                {qcResults.totalIssues > 0 && (
+                  <div style={{ position: 'relative' }}>
+                    <button onClick={() => setQcExportMenu(v => !v)} style={{ background: 'transparent', border: '1px solid ' + P.orange + '66', color: P.orange, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>Export ▾</button>
+                    {qcExportMenu && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 3, background: P.surface, border: '1px solid ' + P.border, borderRadius: 6, zIndex: 200, minWidth: 120, padding: '3px 0', boxShadow: '0 6px 20px rgba(0,0,0,0.4)' }}
+                        onMouseLeave={() => setQcExportMenu(false)}>
+                        <div onClick={() => { setQcExportMenu(false); exportQcReport(); }} style={{ padding: '5px 12px', cursor: 'pointer', fontSize: 11, color: P.text, display: 'flex', alignItems: 'center', gap: 6 }}
+                          onMouseEnter={e => e.currentTarget.style.background = P.rowHov} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          📄 Export PDF
+                        </div>
+                        <div onClick={() => { setQcExportMenu(false); exportQcCsv(); }} style={{ padding: '5px 12px', cursor: 'pointer', fontSize: 11, color: P.text, display: 'flex', alignItems: 'center', gap: 6 }}
+                          onMouseEnter={e => e.currentTarget.style.background = P.rowHov} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          📊 Export CSV
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <button onClick={runQcScan} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, borderRadius: 3, padding: '1px 7px', cursor: 'pointer', fontSize: 10 }}>Re-scan</button>
               </>
             )}
