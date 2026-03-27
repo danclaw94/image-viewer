@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.3 · 2026-03-27';
+const APP_VERSION = 'v1.5.4 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -309,8 +309,44 @@ function ThumbnailStrip({ pages, activePage, onSelect, fileIndex }) {
   );
 }
 
+// ── ResizableTh ───────────────────────────────────────────────────────────
+function ResizableTh({ colKey, width, onResize, onSort, active, sortDir, align, children }) {
+  const dragging = React.useRef(false);
+  const startX   = React.useRef(0);
+  const startW   = React.useRef(0);
+
+  const onMouseDown = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging.current = true;
+    startX.current = e.clientX;
+    startW.current = width;
+    const onMove = ev => {
+      if (!dragging.current) return;
+      const newW = Math.max(40, startW.current + ev.clientX - startX.current);
+      onResize(newW);
+    };
+    const onUp = () => { dragging.current = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  return (
+    <th style={{ width: width, minWidth: 40, padding: 0, borderRight: '1px solid ' + P.border, position: 'relative', userSelect: 'none' }}>
+      <div onClick={onSort} style={{ display: 'flex', alignItems: 'center', justifyContent: align === 'center' ? 'center' : 'flex-start', gap: 4, padding: '6px 8px', cursor: 'pointer', color: active ? P.accent : P.dim, fontWeight: 600, fontSize: 11, overflow: 'hidden' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children}</span>
+        {active && <span style={{ flexShrink: 0 }}>{sortDir === 1 ? '↑' : '↓'}</span>}
+      </div>
+      {/* Resize handle */}
+      <div onMouseDown={onMouseDown} style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 6, cursor: 'col-resize', zIndex: 10, background: 'transparent' }}
+        onMouseEnter={e => e.currentTarget.style.background = P.accent + '55'}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'} />
+    </th>
+  );
+}
+
 // ── VirtualGrid ───────────────────────────────────────────────────────────
-function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap }) {
+function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap, hiddenCols, colWidths }) {
   const containerRef = React.useRef(null);
   const [scrollTop, setScrollTop] = React.useState(0);
   const [height, setHeight] = React.useState(400);
@@ -355,17 +391,23 @@ function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMult
                     style={{ height: ROW_H, background: bg, cursor: 'pointer', borderBottom: '1px solid ' + P.border }}>
                     <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
                     {/* Tag column */}
-                    <td style={{ width: 40, padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center' }}>
-                      {tag === 'responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.green, background: 'rgba(63,185,80,0.12)', padding: '1px 5px', borderRadius: 3 }}>R</span>}
-                      {tag === 'not_responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.red, background: 'rgba(248,81,73,0.12)', padding: '1px 5px', borderRadius: 3 }}>NR</span>}
-                    </td>
-                    <td style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>
-                    {headers.slice(1).map((h, ci) => (
-                      <td key={ci} style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {!hiddenCols || !hiddenCols.has('tag') ? (
+                      <td style={{ width: colWidths && colWidths['tag'] || 40, padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center', overflow: 'hidden' }}>
+                        {tag === 'responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.green, background: 'rgba(63,185,80,0.12)', padding: '1px 5px', borderRadius: 3 }}>R</span>}
+                        {tag === 'not_responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.red, background: 'rgba(248,81,73,0.12)', padding: '1px 5px', borderRadius: 3 }}>NR</span>}
+                      </td>
+                    ) : null}
+                    {!hiddenCols || !hiddenCols.has('docid') ? (
+                      <td style={{ width: colWidths && colWidths['docid'] || 160, padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>
+                    ) : null}
+                    {headers.slice(1).map((h, ci) => (!hiddenCols || !hiddenCols.has('col' + ci)) && (
+                      <td key={ci} style={{ width: colWidths && colWidths['col' + ci] || 140, padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {row.fields[ci + 1] || ''}
                       </td>
                     ))}
-                    <td style={{ width: 55, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'center', fontSize: 11 }}>{row.pages.length}</td>
+                    {!hiddenCols || !hiddenCols.has('pages') ? (
+                      <td style={{ width: colWidths && colWidths['pages'] || 55, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'center', fontSize: 11 }}>{row.pages.length}</td>
+                    ) : null}
                   </tr>
                 );
               })}
@@ -417,6 +459,9 @@ function App() {
   const [sortDir,    setSortDir]    = React.useState(1);
   const [rotation,   setRotation]   = React.useState(0);
   const [selectedDocIds, setSelectedDocIds] = React.useState(new Set());
+  const [hiddenCols,   setHiddenCols]   = React.useState(new Set());
+  const [colWidths,    setColWidths]    = React.useState({});   // colKey → px width
+  const [showColMenu,  setShowColMenu]  = React.useState(false);
 
   // Settings
   const [showSettings, setShowSettings] = React.useState(false);
@@ -655,6 +700,14 @@ function App() {
 
   // Reset copied on doc change
   React.useEffect(() => { setCopied(false); setRotation(0); }, [selDocId]);
+
+  // Close col menu on outside click
+  React.useEffect(() => {
+    if (!showColMenu) return;
+    const handler = () => setShowColMenu(false);
+    const timer = setTimeout(() => document.addEventListener('click', handler), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('click', handler); };
+  }, [showColMenu]);
 
   // Close print menu on outside click
   React.useEffect(() => {
@@ -1031,25 +1084,69 @@ function App() {
               );
             })}
           </div>
-          {/* Column headers */}
-          <div style={{ overflowX: 'auto', flexShrink: 0, borderBottom: '2px solid ' + P.border }}>
-            <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', width: '100%', tableLayout: 'fixed' }}>
+          {/* Column headers with resize + show/hide */}
+          <div style={{ overflowX: 'auto', flexShrink: 0, borderBottom: '2px solid ' + P.border, position: 'relative' }}>
+            <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
               <thead>
                 <tr style={{ background: P.surface }}>
                   <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
-                  <th onClick={() => toggleSort('tag')} style={{ width: 40, padding: '6px 4px', borderRight: '1px solid ' + P.border, color: sortCol === 'tag' ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}>Tag {sortCol === 'tag' ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
-                  <th onClick={() => toggleSort(-1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === -1 ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>DOCID {sortCol === -1 ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
-                  {headers.slice(1).map((h, i) => (
-                    <th key={i} onClick={() => toggleSort(i + 1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === (i + 1) ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
-                      {h} {sortCol === (i + 1) ? (sortDir === 1 ? '↑' : '↓') : ''}
-                    </th>
+                  {!hiddenCols.has('tag') && (
+                    <ResizableTh colKey="tag" width={colWidths['tag'] || 40} onResize={w => setColWidths(p => ({ ...p, tag: w }))} onSort={() => toggleSort('tag')} active={sortCol === 'tag'} sortDir={sortDir}>
+                      Tag
+                    </ResizableTh>
+                  )}
+                  {!hiddenCols.has('docid') && (
+                    <ResizableTh colKey="docid" width={colWidths['docid'] || 160} onResize={w => setColWidths(p => ({ ...p, docid: w }))} onSort={() => toggleSort(-1)} active={sortCol === -1} sortDir={sortDir}>
+                      DOCID
+                    </ResizableTh>
+                  )}
+                  {headers.slice(1).map((h, i) => !hiddenCols.has('col' + i) && (
+                    <ResizableTh key={i} colKey={'col' + i} width={colWidths['col' + i] || 140} onResize={w => setColWidths(p => ({ ...p, ['col' + i]: w }))} onSort={() => toggleSort(i + 1)} active={sortCol === (i + 1)} sortDir={sortDir}>
+                      {h}
+                    </ResizableTh>
                   ))}
-                  <th onClick={() => toggleSort('pages')} style={{ width: 55, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: sortCol === 'pages' ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}>Pages {sortCol === 'pages' ? (sortDir === 1 ? '↑' : '↓') : ''}</th>
+                  {!hiddenCols.has('pages') && (
+                    <ResizableTh colKey="pages" width={colWidths['pages'] || 55} onResize={w => setColWidths(p => ({ ...p, pages: w }))} onSort={() => toggleSort('pages')} active={sortCol === 'pages'} sortDir={sortDir} align="center">
+                      Pages
+                    </ResizableTh>
+                  )}
+                  {/* Show/hide columns button — always last */}
+                  <th style={{ width: 28, padding: 0, borderLeft: '1px solid ' + P.border, background: P.surface, position: 'relative' }}>
+                    <button onClick={e => { e.stopPropagation(); setShowColMenu(v => !v); }}
+                      title="Show/hide columns"
+                      style={{ width: '100%', height: '100%', background: showColMenu ? P.accentGlow : 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 12, padding: '4px 0' }}>
+                      ⋮
+                    </button>
+                    {showColMenu && (
+                      <div onClick={e => e.stopPropagation()} style={{ position: 'absolute', top: '100%', right: 0, marginTop: 2, background: P.surface, border: '1px solid ' + P.border, borderRadius: 6, zIndex: 300, minWidth: 180, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '6px 0' }}>
+                        <div style={{ padding: '4px 12px 6px', fontFamily: mono, fontSize: 10, color: P.dim, borderBottom: '1px solid ' + P.border, marginBottom: 2 }}>Show / Hide Columns</div>
+                        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                          {[['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
+                            const visible = !hiddenCols.has(key);
+                            return (
+                              <div key={key} onClick={() => setHiddenCols(prev => { const n = new Set(prev); visible ? n.add(key) : n.delete(key); return n; })}
+                                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, color: visible ? P.text : P.dim }}
+                                onMouseEnter={e => e.currentTarget.style.background = P.rowHov}
+                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                                <div style={{ width: 14, height: 14, borderRadius: 3, border: '2px solid ' + (visible ? P.accent : P.border), background: visible ? P.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                  {visible && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="#0E1117" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                                </div>
+                                <span style={{ fontFamily: mono, fontSize: 11 }}>{label}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ borderTop: '1px solid ' + P.border, marginTop: 2, padding: '5px 12px' }}>
+                          <button onClick={() => setHiddenCols(new Set())} style={{ background: 'transparent', border: 'none', color: P.accent, cursor: 'pointer', fontSize: 11, fontFamily: mono, padding: 0 }}>Show all</button>
+                        </div>
+                      </div>
+                    )}
+                  </th>
                 </tr>
               </thead>
             </table>
           </div>
-          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect} tagMap={tagMap} />
+          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect} tagMap={tagMap} hiddenCols={hiddenCols} colWidths={colWidths} />
         </div>
 
         {/* ── Image panel ── */}
