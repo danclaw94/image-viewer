@@ -19,17 +19,17 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.3.0 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.4.0 · 2026-03-27';
 
-// ── OPT parser ──────────────────────────────────────────────────────────────
+// ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
   const lines = text.split('\n').map(l => l.replace(/[\r]+$/, '')).filter(l => l.trim());
   const pages = [];
   for (const line of lines) {
     const cols = line.split(',');
     if (cols.length < 3) continue;
-    const docId = cols[0].trim();
-    const imgPath = cols[2].trim();
+    const docId = cols[0].trim(),
+      imgPath = cols[2].trim();
     const isFirst = cols[3] && cols[3].trim().toUpperCase() === 'Y';
     if (!docId || !imgPath) continue;
     pages.push({
@@ -47,9 +47,7 @@ function parseOpt(text) {
         pages: [p.imgPath]
       };
       docs.push(current);
-    } else {
-      current.pages.push(p.imgPath);
-    }
+    } else current.pages.push(p.imgPath);
   }
   return docs;
 }
@@ -74,11 +72,63 @@ function normPath(p) {
   return p.replace(/^\.[\\/]/, '').replace(/\\/g, '/').toLowerCase();
 }
 
+// ── Image cache (LRU, max 30 blob URLs) ─────────────────────────────────────
+const IMG_CACHE_MAX = 30;
+const imgCache = new Map(); // key → blobUrl (insertion order = LRU)
+function cacheGet(key) {
+  return imgCache.get(key) || null;
+}
+function cachePut(key, url) {
+  if (imgCache.has(key)) imgCache.delete(key); // refresh LRU position
+  imgCache.set(key, url);
+  if (imgCache.size > IMG_CACHE_MAX) {
+    const oldest = imgCache.keys().next().value;
+    URL.revokeObjectURL(imgCache.get(oldest));
+    imgCache.delete(oldest);
+  }
+}
+
+// ── TIFF decode → blob URL ───────────────────────────────────────────────────
+async function decodeTiff(buf) {
+  const ifds = UTIF.decode(buf);
+  UTIF.decodeImage(buf, ifds[0]);
+  const rgba = UTIF.toRGBA8(ifds[0]);
+  const w = ifds[0].width,
+    h = ifds[0].height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const id = ctx.createImageData(w, h);
+  id.data.set(rgba);
+  ctx.putImageData(id, 0, 0);
+  return new Promise(res => canvas.toBlob(b => res(URL.createObjectURL(b))));
+}
+
+// ── Resolve + decode one image path → blob URL (with cache) ─────────────────
+async function loadImgUrl(optPath, fileIndex) {
+  const cached = cacheGet(optPath);
+  if (cached) return cached;
+  const norm = normPath(optPath);
+  const filename = norm.split('/').pop();
+  const handle = fileIndex[norm] || fileIndex[filename];
+  if (!handle) return null;
+  const file = await handle.getFile();
+  const name = file.name.toLowerCase();
+  let url;
+  if (name.endsWith('.tif') || name.endsWith('.tiff')) {
+    url = await decodeTiff(await file.arrayBuffer());
+  } else {
+    url = URL.createObjectURL(file);
+  }
+  cachePut(optPath, url);
+  return url;
+}
+
 // ── Palette ──────────────────────────────────────────────────────────────────
 const P = {
   bg: '#0E1117',
   surface: '#161B22',
-  surfaceHov: '#1C2129',
   border: '#30363D',
   text: '#E6EDF3',
   dim: '#8B949E',
@@ -94,6 +144,122 @@ const P = {
 const mono = "'JetBrains Mono','Fira Code','SF Mono',monospace";
 const sans = "'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif";
 
+// ── Virtual list row height ───────────────────────────────────────────────────
+const ROW_H = 28;
+
+// ── VirtualGrid — renders only visible rows ───────────────────────────────────
+function VirtualGrid({
+  rows,
+  headers,
+  selDocId,
+  onSelect
+}) {
+  const containerRef = React.useRef(null);
+  const [scrollTop, setScrollTop] = React.useState(0);
+  const [height, setHeight] = React.useState(400);
+  const [hovRow, setHovRow] = React.useState(null);
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Scroll selected row into view
+  const selIdx = rows.findIndex(r => r.docId === selDocId);
+  React.useEffect(() => {
+    if (selIdx < 0 || !containerRef.current) return;
+    const el = containerRef.current;
+    const rowTop = selIdx * ROW_H;
+    const rowBot = rowTop + ROW_H;
+    if (rowTop < el.scrollTop) el.scrollTop = rowTop;else if (rowBot > el.scrollTop + el.clientHeight) el.scrollTop = rowBot - el.clientHeight;
+  }, [selIdx]);
+  const totalH = rows.length * ROW_H;
+  const OVERSCAN = 10;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const endIdx = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
+  const visible = rows.slice(startIdx, endIdx);
+  return /*#__PURE__*/React.createElement("div", {
+    ref: containerRef,
+    onScroll: e => setScrollTop(e.target.scrollTop),
+    style: {
+      flex: 1,
+      overflow: 'auto',
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: totalH,
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'absolute',
+      top: startIdx * ROW_H,
+      left: 0,
+      right: 0
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      borderCollapse: 'collapse',
+      width: '100%',
+      fontFamily: mono,
+      fontSize: 12,
+      whiteSpace: 'nowrap',
+      tableLayout: 'fixed'
+    }
+  }, /*#__PURE__*/React.createElement("tbody", null, visible.map((row, vi) => {
+    const ri = startIdx + vi;
+    const isSel = row.docId === selDocId;
+    const isHov = hovRow === ri;
+    return /*#__PURE__*/React.createElement("tr", {
+      key: row.docId,
+      onClick: () => onSelect(row.docId),
+      onMouseEnter: () => setHovRow(ri),
+      onMouseLeave: () => setHovRow(null),
+      style: {
+        height: ROW_H,
+        background: isSel ? P.rowSel : isHov ? P.rowHov : 'transparent',
+        cursor: 'pointer',
+        borderBottom: '1px solid ' + P.border
+      }
+    }, /*#__PURE__*/React.createElement("td", {
+      style: {
+        width: 44,
+        padding: '0 8px',
+        borderRight: '1px solid ' + P.border,
+        color: P.dim,
+        textAlign: 'right',
+        fontSize: 11
+      }
+    }, ri + 1), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: '0 10px',
+        borderRight: '1px solid ' + P.border,
+        color: isSel ? P.accent : P.text,
+        fontWeight: isSel ? 600 : 400,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, row.docId), headers.slice(1).map((h, ci) => /*#__PURE__*/React.createElement("td", {
+      key: ci,
+      style: {
+        padding: '0 10px',
+        borderRight: '1px solid ' + P.border,
+        color: P.dim,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, row.fields[ci + 1] || '')), headers.length === 0 && /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: '0 10px',
+        color: P.dim
+      }
+    }, row.pages.length, "p"));
+  }))))));
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
   const [optFile, setOptFile] = React.useState(null);
@@ -102,14 +268,10 @@ function App() {
   const [error, setError] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [launched, setLaunched] = React.useState(false);
-
-  // Parsed
   const [docs, setDocs] = React.useState([]);
-  const [allRows, setAllRows] = React.useState([]); // flat array: {docId, fields:[]}
+  const [allRows, setAllRows] = React.useState([]);
   const [headers, setHeaders] = React.useState([]);
   const [fileIndex, setFileIndex] = React.useState({});
-
-  // View
   const [selDocId, setSelDocId] = React.useState(null);
   const [selPage, setSelPage] = React.useState(0);
   const [imgSrc, setImgSrc] = React.useState(null);
@@ -118,9 +280,9 @@ function App() {
   const [zoom, setZoom] = React.useState('fit-page');
   const [sortCol, setSortCol] = React.useState(null);
   const [sortDir, setSortDir] = React.useState(1);
-  const [hovRow, setHovRow] = React.useState(null);
-  const prevUrl = React.useRef(null);
   const imgAreaRef = React.useRef(null);
+  const fileIndexRef = React.useRef({});
+  fileIndexRef.current = fileIndex;
 
   // ── Load OPT ──
   const loadOpt = async file => {
@@ -141,10 +303,9 @@ function App() {
     if (!lines.length) return;
     const hdrs = parseRow(lines[0]);
     setHeaders(hdrs);
-    const rows = lines.slice(1).map(l => ({
+    setAllRows(lines.slice(1).map(l => ({
       fields: parseRow(l)
-    }));
-    setAllRows(rows);
+    })));
     setDatFile(file.name);
   };
 
@@ -167,18 +328,9 @@ function App() {
     setLoading(false);
   };
 
-  // ── Resolve image ──
-  const resolveImage = async optPath => {
-    const norm = normPath(optPath);
-    const filename = norm.split('/').pop();
-    const handle = fileIndex[norm] || fileIndex[filename];
-    return handle ? handle.getFile() : null;
-  };
-
-  // ── Merge docs + DAT rows → grid rows ──
+  // ── Grid data ──
   const gridRows = React.useMemo(() => {
     if (!docs.length) return [];
-    // Build docId → dat row map using first column as key
     const datMap = {};
     if (allRows.length && headers.length) {
       for (const row of allRows) {
@@ -192,8 +344,6 @@ function App() {
       fields: datMap[doc.docId] || []
     }));
   }, [docs, allRows, headers]);
-
-  // ── Filtered + sorted rows ──
   const filteredRows = React.useMemo(() => {
     let rows = gridRows;
     if (search.trim()) {
@@ -209,12 +359,10 @@ function App() {
     }
     return rows;
   }, [gridRows, search, sortCol, sortDir]);
-
-  // ── Selected row ──
   const selRow = selDocId ? filteredRows.find(r => r.docId === selDocId) : null;
   const totalPages = selRow ? selRow.pages.length : 0;
 
-  // ── Load image ──
+  // ── Load current image (with cache) ──
   React.useEffect(() => {
     if (!selRow || !Object.keys(fileIndex).length) {
       setImgSrc(null);
@@ -226,45 +374,27 @@ function App() {
       return;
     }
     let cancelled = false;
-    setImgLoading(true);
-    setImgSrc(null);
-    setError(null);
-    resolveImage(path).then(async file => {
-      if (cancelled || !file) {
+
+    // Show cached version immediately if available
+    const cached = cacheGet(path);
+    if (cached) {
+      setImgSrc(cached);
+      setImgLoading(false);
+    } else {
+      setImgLoading(true);
+      setImgSrc(null);
+      setError(null);
+    }
+    loadImgUrl(path, fileIndex).then(url => {
+      if (cancelled) return;
+      if (!url) {
+        setError('Not found: ' + path);
         setImgLoading(false);
-        if (!cancelled) setError('Not found: ' + path);
         return;
       }
-      const name = file.name.toLowerCase();
-      if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-        const buf = await file.arrayBuffer();
-        const ifds = UTIF.decode(buf);
-        UTIF.decodeImage(buf, ifds[0]);
-        const rgba = UTIF.toRGBA8(ifds[0]);
-        const w = ifds[0].width,
-          h = ifds[0].height;
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        const id = ctx.createImageData(w, h);
-        id.data.set(rgba);
-        ctx.putImageData(id, 0, 0);
-        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-        canvas.toBlob(blob => {
-          if (cancelled) return;
-          const url = URL.createObjectURL(blob);
-          prevUrl.current = url;
-          setImgSrc(url);
-          setImgLoading(false);
-        });
-      } else {
-        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-        const url = URL.createObjectURL(file);
-        prevUrl.current = url;
-        setImgSrc(url);
-        setImgLoading(false);
-      }
+      setImgSrc(url);
+      setImgLoading(false);
+      setError(null);
     }).catch(e => {
       if (!cancelled) {
         setError(e.message);
@@ -276,18 +406,38 @@ function App() {
     };
   }, [selDocId, selPage, fileIndex]);
 
+  // ── Prefetch adjacent images in background ──
+  React.useEffect(() => {
+    if (!selRow || !Object.keys(fileIndex).length) return;
+    const prefetch = path => {
+      if (!path || cacheGet(path)) return;
+      loadImgUrl(path, fileIndex).catch(() => {});
+    };
+    // Prefetch next + prev page of current doc
+    prefetch(selRow.pages[selPage + 1]);
+    prefetch(selRow.pages[selPage - 1]);
+    // Prefetch first page of next + prev doc
+    const idx = filteredRows.findIndex(r => r.docId === selDocId);
+    if (idx >= 0) {
+      if (filteredRows[idx + 1]) prefetch(filteredRows[idx + 1].pages[0]);
+      if (filteredRows[idx - 1]) prefetch(filteredRows[idx - 1].pages[0]);
+    }
+  }, [selDocId, selPage, fileIndex, filteredRows]);
+
   // ── Keyboard nav ──
   React.useEffect(() => {
     if (!selDocId) return;
     const handler = e => {
       const idx = filteredRows.findIndex(r => r.docId === selDocId);
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        e.preventDefault();
         if (selPage < totalPages - 1) setSelPage(p => p + 1);else if (idx < filteredRows.length - 1) {
           setSelDocId(filteredRows[idx + 1].docId);
           setSelPage(0);
         }
       }
-      if (e.key === 'ArrowUp') {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
         if (selPage > 0) setSelPage(p => p - 1);else if (idx > 0) {
           setSelDocId(filteredRows[idx - 1].docId);
           setSelPage(0);
@@ -297,14 +447,17 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [selDocId, selPage, filteredRows, totalPages]);
-
-  // ── Sort toggle ──
   const toggleSort = colIdx => {
     if (sortCol === colIdx) setSortDir(d => -d);else {
       setSortCol(colIdx);
       setSortDir(1);
     }
   };
+  const selectDoc = React.useCallback(docId => {
+    setSelDocId(docId);
+    setSelPage(0);
+    setZoom('fit-page');
+  }, []);
   const reset = () => {
     setDocs([]);
     setAllRows([]);
@@ -317,9 +470,11 @@ function App() {
     setImgSrc(null);
     setError(null);
     setLaunched(false);
+    imgCache.forEach(url => URL.revokeObjectURL(url));
+    imgCache.clear();
   };
 
-  // ── Landing ──────────────────────────────────────────────────────────────
+  // ── Landing ───────────────────────────────────────────────────────────────
   if (!launched) {
     const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
     return /*#__PURE__*/React.createElement("div", {
@@ -374,7 +529,7 @@ function App() {
       accept: ".opt,.OPT,.txt"
     }), /*#__PURE__*/React.createElement(FileCard, {
       label: "DAT File",
-      hint: "Optional \u2014 metadata grid",
+      hint: "Optional \u2014 metadata",
       color: P.green,
       loaded: datFile,
       onSelect: async f => {
@@ -454,8 +609,8 @@ function App() {
     style: {
       display: 'flex',
       alignItems: 'center',
-      gap: 12,
-      padding: '8px 16px',
+      gap: 10,
+      padding: '7px 16px',
       borderBottom: '1px solid ' + P.border,
       flexShrink: 0,
       background: P.surface
@@ -550,7 +705,7 @@ function App() {
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       width: GRID_W,
-      transition: 'width 0.15s',
+      transition: 'width 0.12s',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
@@ -558,40 +713,36 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
-      overflow: 'auto'
+      overflowX: 'auto',
+      flexShrink: 0,
+      borderBottom: '2px solid ' + P.border
     }
   }, /*#__PURE__*/React.createElement("table", {
     style: {
       borderCollapse: 'collapse',
-      width: '100%',
       fontFamily: mono,
       fontSize: 12,
-      whiteSpace: 'nowrap'
+      whiteSpace: 'nowrap',
+      width: '100%',
+      tableLayout: 'fixed'
     }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
     style: {
-      position: 'sticky',
-      top: 0,
-      zIndex: 2,
       background: P.surface
     }
   }, /*#__PURE__*/React.createElement("th", {
     style: {
-      padding: '7px 10px',
-      borderBottom: '2px solid ' + P.border,
+      width: 44,
+      padding: '6px 8px',
       borderRight: '1px solid ' + P.border,
       color: P.dim,
       fontWeight: 600,
-      fontSize: 11,
-      minWidth: 40,
-      cursor: 'default'
+      fontSize: 11
     }
   }, "#"), /*#__PURE__*/React.createElement("th", {
     onClick: () => toggleSort(-1),
     style: {
-      padding: '7px 12px',
-      borderBottom: '2px solid ' + P.border,
+      padding: '6px 10px',
       borderRight: '1px solid ' + P.border,
       color: sortCol === -1 ? P.accent : P.dim,
       fontWeight: 600,
@@ -603,8 +754,7 @@ function App() {
     key: i,
     onClick: () => toggleSort(i + 1),
     style: {
-      padding: '7px 12px',
-      borderBottom: '2px solid ' + P.border,
+      padding: '6px 10px',
       borderRight: '1px solid ' + P.border,
       color: sortCol === i + 1 ? P.accent : P.dim,
       fontWeight: 600,
@@ -614,62 +764,19 @@ function App() {
     }
   }, h, " ", sortCol === i + 1 ? sortDir === 1 ? '↑' : '↓' : '')), headers.length === 0 && /*#__PURE__*/React.createElement("th", {
     style: {
-      padding: '7px 12px',
-      borderBottom: '2px solid ' + P.border,
+      padding: '6px 10px',
       color: P.dim,
       fontWeight: 600,
       fontSize: 11
     }
-  }, "Pages"))), /*#__PURE__*/React.createElement("tbody", null, filteredRows.map((row, ri) => {
-    const isSel = row.docId === selDocId;
-    return /*#__PURE__*/React.createElement("tr", {
-      key: row.docId,
-      onClick: () => {
-        setSelDocId(row.docId);
-        setSelPage(0);
-        setZoom('fit-page');
-      },
-      onMouseEnter: () => setHovRow(ri),
-      onMouseLeave: () => setHovRow(null),
-      style: {
-        background: isSel ? P.rowSel : hovRow === ri ? P.rowHov : 'transparent',
-        cursor: 'pointer',
-        borderBottom: '1px solid ' + P.border
-      }
-    }, /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: '5px 10px',
-        borderRight: '1px solid ' + P.border,
-        color: P.dim,
-        textAlign: 'right'
-      }
-    }, ri + 1), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: '5px 12px',
-        borderRight: '1px solid ' + P.border,
-        color: isSel ? P.accent : P.text,
-        fontWeight: isSel ? 600 : 400
-      }
-    }, row.docId), headers.slice(1).map((h, ci) => /*#__PURE__*/React.createElement("td", {
-      key: ci,
-      style: {
-        padding: '5px 12px',
-        borderRight: '1px solid ' + P.border,
-        color: P.dim,
-        maxWidth: 240,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
-      }
-    }, row.fields[ci + 1] || '')), headers.length === 0 && /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: '5px 12px',
-        color: P.dim
-      }
-    }, row.pages.length, " page", row.pages.length !== 1 ? 's' : ''));
-  }))))), selDocId && /*#__PURE__*/React.createElement("div", {
+  }, "Pages"))))), /*#__PURE__*/React.createElement(VirtualGrid, {
+    rows: filteredRows,
+    headers: headers,
+    selDocId: selDocId,
+    onSelect: selectDoc
+  })), selDocId && /*#__PURE__*/React.createElement("div", {
     style: {
       width: IMG_W,
-      transition: 'width 0.15s',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden'
@@ -678,8 +785,8 @@ function App() {
     style: {
       display: 'flex',
       alignItems: 'center',
-      gap: 8,
-      padding: '5px 12px',
+      gap: 7,
+      padding: '5px 10px',
       borderBottom: '1px solid ' + P.border,
       flexShrink: 0,
       background: P.surface
@@ -803,7 +910,7 @@ function App() {
       textAlign: 'center',
       maxWidth: 300
     }
-  }, error), !imgLoading && !error && imgSrc && /*#__PURE__*/React.createElement("img", {
+  }, error), imgSrc && /*#__PURE__*/React.createElement("img", {
     src: imgSrc,
     alt: selDocId,
     style: {
@@ -812,19 +919,12 @@ function App() {
       maxWidth: zoom === 'fit-page' || zoom === 'fit-width' ? '100%' : 'none',
       maxHeight: zoom === 'fit-page' ? '100%' : 'none',
       width: typeof zoom === 'number' ? zoom * 100 + '%' : undefined,
-      height: 'auto'
+      height: 'auto',
+      opacity: imgLoading ? 0.4 : 1,
+      transition: 'opacity 0.1s'
     }
-  }), !imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      color: P.orange,
-      fontFamily: mono,
-      fontSize: 11,
-      textAlign: 'center'
-    }
-  }, "No image folder loaded.")))));
+  })))));
 }
-
-// ── File card ─────────────────────────────────────────────────────────────────
 function FileCard({
   label,
   hint,

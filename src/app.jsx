@@ -1,27 +1,21 @@
-const APP_VERSION = 'v1.3.0 · 2026-03-27';
+const APP_VERSION = 'v1.4.0 · 2026-03-27';
 
-// ── OPT parser ──────────────────────────────────────────────────────────────
+// ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
   const lines = text.split('\n').map(l => l.replace(/[\r]+$/, '')).filter(l => l.trim());
   const pages = [];
   for (const line of lines) {
     const cols = line.split(',');
     if (cols.length < 3) continue;
-    const docId   = cols[0].trim();
-    const imgPath = cols[2].trim();
+    const docId = cols[0].trim(), imgPath = cols[2].trim();
     const isFirst = cols[3] && cols[3].trim().toUpperCase() === 'Y';
     if (!docId || !imgPath) continue;
     pages.push({ docId, imgPath, isFirst });
   }
-  const docs = [];
-  let current = null;
+  const docs = []; let current = null;
   for (const p of pages) {
-    if (p.isFirst || !current) {
-      current = { docId: p.docId, pages: [p.imgPath] };
-      docs.push(current);
-    } else {
-      current.pages.push(p.imgPath);
-    }
+    if (p.isFirst || !current) { current = { docId: p.docId, pages: [p.imgPath] }; docs.push(current); }
+    else current.pages.push(p.imgPath);
   }
   return docs;
 }
@@ -41,20 +35,142 @@ function detectEncoding(buffer) {
   if (b[0] === 0xFE && b[1] === 0xFF) return 'utf-16be';
   return 'utf-8';
 }
-function normPath(p) {
-  return p.replace(/^\.[\\/]/, '').replace(/\\/g, '/').toLowerCase();
+function normPath(p) { return p.replace(/^\.[\\/]/, '').replace(/\\/g, '/').toLowerCase(); }
+
+// ── Image cache (LRU, max 30 blob URLs) ─────────────────────────────────────
+const IMG_CACHE_MAX = 30;
+const imgCache = new Map(); // key → blobUrl (insertion order = LRU)
+function cacheGet(key) { return imgCache.get(key) || null; }
+function cachePut(key, url) {
+  if (imgCache.has(key)) imgCache.delete(key); // refresh LRU position
+  imgCache.set(key, url);
+  if (imgCache.size > IMG_CACHE_MAX) {
+    const oldest = imgCache.keys().next().value;
+    URL.revokeObjectURL(imgCache.get(oldest));
+    imgCache.delete(oldest);
+  }
+}
+
+// ── TIFF decode → blob URL ───────────────────────────────────────────────────
+async function decodeTiff(buf) {
+  const ifds = UTIF.decode(buf);
+  UTIF.decodeImage(buf, ifds[0]);
+  const rgba = UTIF.toRGBA8(ifds[0]);
+  const w = ifds[0].width, h = ifds[0].height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const id = ctx.createImageData(w, h);
+  id.data.set(rgba); ctx.putImageData(id, 0, 0);
+  return new Promise(res => canvas.toBlob(b => res(URL.createObjectURL(b))));
+}
+
+// ── Resolve + decode one image path → blob URL (with cache) ─────────────────
+async function loadImgUrl(optPath, fileIndex) {
+  const cached = cacheGet(optPath);
+  if (cached) return cached;
+  const norm = normPath(optPath);
+  const filename = norm.split('/').pop();
+  const handle = fileIndex[norm] || fileIndex[filename];
+  if (!handle) return null;
+  const file = await handle.getFile();
+  const name = file.name.toLowerCase();
+  let url;
+  if (name.endsWith('.tif') || name.endsWith('.tiff')) {
+    url = await decodeTiff(await file.arrayBuffer());
+  } else {
+    url = URL.createObjectURL(file);
+  }
+  cachePut(optPath, url);
+  return url;
 }
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 const P = {
-  bg: '#0E1117', surface: '#161B22', surfaceHov: '#1C2129',
-  border: '#30363D', text: '#E6EDF3', dim: '#8B949E',
+  bg: '#0E1117', surface: '#161B22', border: '#30363D',
+  text: '#E6EDF3', dim: '#8B949E',
   accent: '#58A6FF', accentGlow: 'rgba(88,166,255,0.15)',
   green: '#3FB950', orange: '#D29922', red: '#F85149', tag: '#21262D',
   rowSel: 'rgba(88,166,255,0.18)', rowHov: '#1C2129',
 };
 const mono = "'JetBrains Mono','Fira Code','SF Mono',monospace";
 const sans = "'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif";
+
+// ── Virtual list row height ───────────────────────────────────────────────────
+const ROW_H = 28;
+
+// ── VirtualGrid — renders only visible rows ───────────────────────────────────
+function VirtualGrid({ rows, headers, selDocId, onSelect }) {
+  const containerRef = React.useRef(null);
+  const [scrollTop, setScrollTop] = React.useState(0);
+  const [height, setHeight]       = React.useState(400);
+  const [hovRow, setHovRow]       = React.useState(null);
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Scroll selected row into view
+  const selIdx = rows.findIndex(r => r.docId === selDocId);
+  React.useEffect(() => {
+    if (selIdx < 0 || !containerRef.current) return;
+    const el = containerRef.current;
+    const rowTop = selIdx * ROW_H;
+    const rowBot = rowTop + ROW_H;
+    if (rowTop < el.scrollTop) el.scrollTop = rowTop;
+    else if (rowBot > el.scrollTop + el.clientHeight) el.scrollTop = rowBot - el.clientHeight;
+  }, [selIdx]);
+
+  const totalH = rows.length * ROW_H;
+  const OVERSCAN = 10;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
+  const visible  = rows.slice(startIdx, endIdx);
+
+  return (
+    <div ref={containerRef} onScroll={e => setScrollTop(e.target.scrollTop)}
+      style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+      {/* Spacer for full scroll height */}
+      <div style={{ height: totalH, position: 'relative' }}>
+        {/* Offset block for visible rows */}
+        <div style={{ position: 'absolute', top: startIdx * ROW_H, left: 0, right: 0 }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
+            <tbody>
+              {visible.map((row, vi) => {
+                const ri     = startIdx + vi;
+                const isSel  = row.docId === selDocId;
+                const isHov  = hovRow === ri;
+                return (
+                  <tr key={row.docId}
+                    onClick={() => onSelect(row.docId)}
+                    onMouseEnter={() => setHovRow(ri)}
+                    onMouseLeave={() => setHovRow(null)}
+                    style={{ height: ROW_H, background: isSel ? P.rowSel : isHov ? P.rowHov : 'transparent', cursor: 'pointer', borderBottom: '1px solid ' + P.border }}
+                  >
+                    <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
+                    <td style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>
+                    {headers.slice(1).map((h, ci) => (
+                      <td key={ci} style={{ padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {row.fields[ci + 1] || ''}
+                      </td>
+                    ))}
+                    {headers.length === 0 && (
+                      <td style={{ padding: '0 10px', color: P.dim }}>{row.pages.length}p</td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
@@ -65,13 +181,11 @@ function App() {
   const [loading,    setLoading]    = React.useState(false);
   const [launched,   setLaunched]   = React.useState(false);
 
-  // Parsed
   const [docs,       setDocs]       = React.useState([]);
-  const [allRows,    setAllRows]    = React.useState([]);  // flat array: {docId, fields:[]}
+  const [allRows,    setAllRows]    = React.useState([]);
   const [headers,    setHeaders]    = React.useState([]);
   const [fileIndex,  setFileIndex]  = React.useState({});
 
-  // View
   const [selDocId,   setSelDocId]   = React.useState(null);
   const [selPage,    setSelPage]    = React.useState(0);
   const [imgSrc,     setImgSrc]     = React.useState(null);
@@ -80,17 +194,16 @@ function App() {
   const [zoom,       setZoom]       = React.useState('fit-page');
   const [sortCol,    setSortCol]    = React.useState(null);
   const [sortDir,    setSortDir]    = React.useState(1);
-  const [hovRow,     setHovRow]     = React.useState(null);
 
-  const prevUrl    = React.useRef(null);
-  const imgAreaRef = React.useRef(null);
+  const imgAreaRef   = React.useRef(null);
+  const fileIndexRef = React.useRef({});
+  fileIndexRef.current = fileIndex;
 
   // ── Load OPT ──
   const loadOpt = async (file) => {
     const buf = await file.arrayBuffer();
     const text = new TextDecoder(detectEncoding(buf)).decode(buf);
-    setDocs(parseOpt(text));
-    setOptFile(file.name);
+    setDocs(parseOpt(text)); setOptFile(file.name);
     setSelDocId(null); setSelPage(0); setImgSrc(null);
   };
 
@@ -102,8 +215,7 @@ function App() {
     if (!lines.length) return;
     const hdrs = parseRow(lines[0]);
     setHeaders(hdrs);
-    const rows = lines.slice(1).map(l => ({ fields: parseRow(l) }));
-    setAllRows(rows);
+    setAllRows(lines.slice(1).map(l => ({ fields: parseRow(l) })));
     setDatFile(file.name);
   };
 
@@ -114,53 +226,29 @@ function App() {
     async function walk(handle, prefix) {
       for await (const [name, entry] of handle.entries()) {
         const path = prefix ? prefix + '/' + name : name;
-        if (entry.kind === 'file') {
-          idx[path.toLowerCase()] = entry;
-          idx[name.toLowerCase()] = entry;
-        } else await walk(entry, path);
+        if (entry.kind === 'file') { idx[path.toLowerCase()] = entry; idx[name.toLowerCase()] = entry; }
+        else await walk(entry, path);
       }
     }
     await walk(dirHandle, '');
-    setFileIndex(idx);
-    setImgDir(dirHandle.name);
-    setLoading(false);
+    setFileIndex(idx); setImgDir(dirHandle.name); setLoading(false);
   };
 
-  // ── Resolve image ──
-  const resolveImage = async (optPath) => {
-    const norm = normPath(optPath);
-    const filename = norm.split('/').pop();
-    const handle = fileIndex[norm] || fileIndex[filename];
-    return handle ? handle.getFile() : null;
-  };
-
-  // ── Merge docs + DAT rows → grid rows ──
+  // ── Grid data ──
   const gridRows = React.useMemo(() => {
     if (!docs.length) return [];
-    // Build docId → dat row map using first column as key
     const datMap = {};
     if (allRows.length && headers.length) {
-      for (const row of allRows) {
-        const id = row.fields[0];
-        if (id) datMap[id.trim()] = row.fields;
-      }
+      for (const row of allRows) { const id = row.fields[0]; if (id) datMap[id.trim()] = row.fields; }
     }
-    return docs.map(doc => ({
-      docId:  doc.docId,
-      pages:  doc.pages,
-      fields: datMap[doc.docId] || [],
-    }));
+    return docs.map(doc => ({ docId: doc.docId, pages: doc.pages, fields: datMap[doc.docId] || [] }));
   }, [docs, allRows, headers]);
 
-  // ── Filtered + sorted rows ──
   const filteredRows = React.useMemo(() => {
     let rows = gridRows;
     if (search.trim()) {
       const q = search.toLowerCase();
-      rows = rows.filter(r =>
-        r.docId.toLowerCase().includes(q) ||
-        r.fields.some(f => f.toLowerCase().includes(q))
-      );
+      rows = rows.filter(r => r.docId.toLowerCase().includes(q) || r.fields.some(f => f.toLowerCase().includes(q)));
     }
     if (sortCol !== null) {
       rows = [...rows].sort((a, b) => {
@@ -172,56 +260,60 @@ function App() {
     return rows;
   }, [gridRows, search, sortCol, sortDir]);
 
-  // ── Selected row ──
-  const selRow = selDocId ? filteredRows.find(r => r.docId === selDocId) : null;
+  const selRow     = selDocId ? filteredRows.find(r => r.docId === selDocId) : null;
   const totalPages = selRow ? selRow.pages.length : 0;
 
-  // ── Load image ──
+  // ── Load current image (with cache) ──
   React.useEffect(() => {
     if (!selRow || !Object.keys(fileIndex).length) { setImgSrc(null); return; }
     const path = selRow.pages[selPage];
     if (!path) { setImgSrc(null); return; }
     let cancelled = false;
-    setImgLoading(true); setImgSrc(null); setError(null);
-    resolveImage(path).then(async file => {
-      if (cancelled || !file) { setImgLoading(false); if (!cancelled) setError('Not found: ' + path); return; }
-      const name = file.name.toLowerCase();
-      if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-        const buf = await file.arrayBuffer();
-        const ifds = UTIF.decode(buf);
-        UTIF.decodeImage(buf, ifds[0]);
-        const rgba = UTIF.toRGBA8(ifds[0]);
-        const w = ifds[0].width, h = ifds[0].height;
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        const id = ctx.createImageData(w, h);
-        id.data.set(rgba); ctx.putImageData(id, 0, 0);
-        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-        canvas.toBlob(blob => {
-          if (cancelled) return;
-          const url = URL.createObjectURL(blob);
-          prevUrl.current = url; setImgSrc(url); setImgLoading(false);
-        });
-      } else {
-        if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-        const url = URL.createObjectURL(file);
-        prevUrl.current = url; setImgSrc(url); setImgLoading(false);
-      }
+
+    // Show cached version immediately if available
+    const cached = cacheGet(path);
+    if (cached) { setImgSrc(cached); setImgLoading(false); }
+    else { setImgLoading(true); setImgSrc(null); setError(null); }
+
+    loadImgUrl(path, fileIndex).then(url => {
+      if (cancelled) return;
+      if (!url) { setError('Not found: ' + path); setImgLoading(false); return; }
+      setImgSrc(url); setImgLoading(false); setError(null);
     }).catch(e => { if (!cancelled) { setError(e.message); setImgLoading(false); } });
+
     return () => { cancelled = true; };
   }, [selDocId, selPage, fileIndex]);
+
+  // ── Prefetch adjacent images in background ──
+  React.useEffect(() => {
+    if (!selRow || !Object.keys(fileIndex).length) return;
+    const prefetch = (path) => {
+      if (!path || cacheGet(path)) return;
+      loadImgUrl(path, fileIndex).catch(() => {});
+    };
+    // Prefetch next + prev page of current doc
+    prefetch(selRow.pages[selPage + 1]);
+    prefetch(selRow.pages[selPage - 1]);
+    // Prefetch first page of next + prev doc
+    const idx = filteredRows.findIndex(r => r.docId === selDocId);
+    if (idx >= 0) {
+      if (filteredRows[idx + 1]) prefetch(filteredRows[idx + 1].pages[0]);
+      if (filteredRows[idx - 1]) prefetch(filteredRows[idx - 1].pages[0]);
+    }
+  }, [selDocId, selPage, fileIndex, filteredRows]);
 
   // ── Keyboard nav ──
   React.useEffect(() => {
     if (!selDocId) return;
     const handler = e => {
       const idx = filteredRows.findIndex(r => r.docId === selDocId);
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        e.preventDefault();
         if (selPage < totalPages - 1) setSelPage(p => p + 1);
         else if (idx < filteredRows.length - 1) { setSelDocId(filteredRows[idx + 1].docId); setSelPage(0); }
       }
-      if (e.key === 'ArrowUp') {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
         if (selPage > 0) setSelPage(p => p - 1);
         else if (idx > 0) { setSelDocId(filteredRows[idx - 1].docId); setSelPage(0); }
       }
@@ -230,19 +322,23 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [selDocId, selPage, filteredRows, totalPages]);
 
-  // ── Sort toggle ──
   const toggleSort = (colIdx) => {
     if (sortCol === colIdx) setSortDir(d => -d);
     else { setSortCol(colIdx); setSortDir(1); }
   };
 
+  const selectDoc = React.useCallback((docId) => {
+    setSelDocId(docId); setSelPage(0); setZoom('fit-page');
+  }, []);
+
   const reset = () => {
     setDocs([]); setAllRows([]); setHeaders([]); setFileIndex({});
     setOptFile(null); setDatFile(null); setImgDir(null);
     setSelDocId(null); setImgSrc(null); setError(null); setLaunched(false);
+    imgCache.forEach(url => URL.revokeObjectURL(url)); imgCache.clear();
   };
 
-  // ── Landing ──────────────────────────────────────────────────────────────
+  // ── Landing ───────────────────────────────────────────────────────────────
   if (!launched) {
     const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
     return (
@@ -255,7 +351,7 @@ function App() {
           <FileCard label="OPT File" hint="Required" color={P.accent} loaded={optFile}
             onSelect={async f => { try { await loadOpt(f); } catch(e) { setError(e.message); }}}
             accept=".opt,.OPT,.txt" />
-          <FileCard label="DAT File" hint="Optional — metadata grid" color={P.green} loaded={datFile}
+          <FileCard label="DAT File" hint="Optional — metadata" color={P.green} loaded={datFile}
             onSelect={async f => { try { await loadDat(f); } catch(e) { setError(e.message); }}}
             accept=".dat,.DAT,.txt" />
           <DirCard label="Image Folder" hint="Required" loaded={imgDir} loading={loading}
@@ -267,8 +363,7 @@ function App() {
         <button disabled={!canLaunch} onClick={() => setLaunched(true)} style={{
           padding: '12px 40px', borderRadius: 8, border: 'none', fontSize: 15, fontWeight: 700,
           cursor: canLaunch ? 'pointer' : 'not-allowed',
-          background: canLaunch ? P.accent : P.border,
-          color: canLaunch ? '#fff' : P.dim,
+          background: canLaunch ? P.accent : P.border, color: canLaunch ? '#fff' : P.dim,
         }}>
           {docs.length === 0 ? 'Load an OPT file to continue' : Object.keys(fileIndex).length === 0 ? 'Select image folder to continue' : 'Open Viewer →'}
         </button>
@@ -288,7 +383,7 @@ function App() {
     <div style={{ height: '100vh', background: P.bg, display: 'flex', flexDirection: 'column', fontFamily: sans, color: P.text, overflow: 'hidden' }}>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 16px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
         <a href="https://vdiscovery.com" target="_blank" rel="noopener noreferrer" style={{ lineHeight: 0 }}>
           <img src="v-outline.png" alt="vDiscovery" style={{ height: 24 }} />
         </a>
@@ -306,63 +401,36 @@ function App() {
       {/* Body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-        {/* ── Grid ── */}
-        <div style={{ width: GRID_W, transition: 'width 0.15s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? ('1px solid ' + P.border) : 'none' }}>
-          <div style={{ flex: 1, overflow: 'auto' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap' }}>
+        {/* ── Grid (virtual) ── */}
+        <div style={{ width: GRID_W, transition: 'width 0.12s', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: selDocId ? ('1px solid ' + P.border) : 'none' }}>
+          {/* Sticky header */}
+          <div style={{ overflowX: 'auto', flexShrink: 0, borderBottom: '2px solid ' + P.border }}>
+            <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', width: '100%', tableLayout: 'fixed' }}>
               <thead>
-                <tr style={{ position: 'sticky', top: 0, zIndex: 2, background: P.surface }}>
-                  {/* Page col */}
-                  <th style={{ padding: '7px 10px', borderBottom: '2px solid ' + P.border, borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11, minWidth: 40, cursor: 'default' }}>#</th>
-                  {/* DocID col */}
-                  <th onClick={() => toggleSort(-1)} style={{ padding: '7px 12px', borderBottom: '2px solid ' + P.border, borderRight: '1px solid ' + P.border, color: sortCol === -1 ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
+                <tr style={{ background: P.surface }}>
+                  <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
+                  <th onClick={() => toggleSort(-1)} style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === -1 ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
                     DOCID {sortCol === -1 ? (sortDir === 1 ? '↑' : '↓') : ''}
                   </th>
                   {headers.slice(1).map((h, i) => (
                     <th key={i} onClick={() => toggleSort(i + 1)}
-                      style={{ padding: '7px 12px', borderBottom: '2px solid ' + P.border, borderRight: '1px solid ' + P.border, color: sortCol === (i + 1) ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
+                      style={{ padding: '6px 10px', borderRight: '1px solid ' + P.border, color: sortCol === (i + 1) ? P.accent : P.dim, fontWeight: 600, fontSize: 11, cursor: 'pointer', userSelect: 'none' }}>
                       {h} {sortCol === (i + 1) ? (sortDir === 1 ? '↑' : '↓') : ''}
                     </th>
                   ))}
-                  {/* Fallback if no DAT */}
-                  {headers.length === 0 && (
-                    <th style={{ padding: '7px 12px', borderBottom: '2px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>Pages</th>
-                  )}
+                  {headers.length === 0 && <th style={{ padding: '6px 10px', color: P.dim, fontWeight: 600, fontSize: 11 }}>Pages</th>}
                 </tr>
               </thead>
-              <tbody>
-                {filteredRows.map((row, ri) => {
-                  const isSel = row.docId === selDocId;
-                  return (
-                    <tr key={row.docId}
-                      onClick={() => { setSelDocId(row.docId); setSelPage(0); setZoom('fit-page'); }}
-                      onMouseEnter={() => setHovRow(ri)}
-                      onMouseLeave={() => setHovRow(null)}
-                      style={{ background: isSel ? P.rowSel : hovRow === ri ? P.rowHov : 'transparent', cursor: 'pointer', borderBottom: '1px solid ' + P.border }}
-                    >
-                      <td style={{ padding: '5px 10px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right' }}>{ri + 1}</td>
-                      <td style={{ padding: '5px 12px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400 }}>{row.docId}</td>
-                      {headers.slice(1).map((h, ci) => (
-                        <td key={ci} style={{ padding: '5px 12px', borderRight: '1px solid ' + P.border, color: P.dim, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {row.fields[ci + 1] || ''}
-                        </td>
-                      ))}
-                      {headers.length === 0 && (
-                        <td style={{ padding: '5px 12px', color: P.dim }}>{row.pages.length} page{row.pages.length !== 1 ? 's' : ''}</td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
             </table>
           </div>
+          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} onSelect={selectDoc} />
         </div>
 
         {/* ── Image panel ── */}
         {selDocId && (
-          <div style={{ width: IMG_W, transition: 'width 0.15s', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Image toolbar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
+          <div style={{ width: IMG_W, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* Toolbar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px', borderBottom: '1px solid ' + P.border, flexShrink: 0, background: P.surface }}>
               <span style={{ fontFamily: mono, fontSize: 12, color: P.accent, fontWeight: 600 }}>{selDocId}</span>
               <div style={{ flex: 1 }} />
               <button onClick={() => setSelPage(p => Math.max(0, p - 1))} disabled={selPage === 0}
@@ -385,7 +453,7 @@ function App() {
             <div ref={imgAreaRef} style={{ flex: 1, overflow: 'auto', display: 'flex', alignItems: zoom === 'fit-page' ? 'center' : 'flex-start', justifyContent: 'center', padding: zoom === 'fit-page' ? 8 : 16, background: '#080C10' }}>
               {imgLoading && <div style={{ color: P.dim, fontFamily: mono, fontSize: 12 }}>Loading…</div>}
               {!imgLoading && error && <div style={{ color: P.red, fontFamily: mono, fontSize: 11, textAlign: 'center', maxWidth: 300 }}>{error}</div>}
-              {!imgLoading && !error && imgSrc && (
+              {imgSrc && (
                 <img src={imgSrc} alt={selDocId} style={{
                   display: 'block',
                   boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
@@ -393,10 +461,9 @@ function App() {
                   maxHeight: zoom === 'fit-page' ? '100%' : 'none',
                   width: typeof zoom === 'number' ? (zoom * 100) + '%' : undefined,
                   height: 'auto',
+                  opacity: imgLoading ? 0.4 : 1,
+                  transition: 'opacity 0.1s',
                 }} />
-              )}
-              {!imgLoading && !error && !imgSrc && Object.keys(fileIndex).length === 0 && (
-                <div style={{ color: P.orange, fontFamily: mono, fontSize: 11, textAlign: 'center' }}>No image folder loaded.</div>
               )}
             </div>
           </div>
@@ -406,7 +473,6 @@ function App() {
   );
 }
 
-// ── File card ─────────────────────────────────────────────────────────────────
 function FileCard({ label, hint, color, loaded, onSelect, accept }) {
   const ref = React.useRef();
   return (
