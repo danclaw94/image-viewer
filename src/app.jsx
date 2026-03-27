@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.5.4 · 2026-03-27';
+const APP_VERSION = 'v1.5.5 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -346,11 +346,13 @@ function ResizableTh({ colKey, width, onResize, onSort, active, sortDir, align, 
 }
 
 // ── VirtualGrid ───────────────────────────────────────────────────────────
-function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap, hiddenCols, colWidths }) {
+function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMultiSelect, tagMap, hiddenCols, colWidths, sortCol, sortDir, onSort, showColMenu, setShowColMenu, setHiddenCols, setColWidths }) {
   const containerRef = React.useRef(null);
   const [scrollTop, setScrollTop] = React.useState(0);
-  const [height, setHeight] = React.useState(400);
-  const [hovRow, setHovRow] = React.useState(null);
+  const [height, setHeight]       = React.useState(400);
+  const [hovRow, setHovRow]       = React.useState(null);
+  const HEADER_H = 30; // px — height of the sticky thead
+
   React.useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -358,63 +360,110 @@ function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMult
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
   const selIdx = rows.findIndex(r => r.docId === selDocId);
   React.useEffect(() => {
     if (selIdx < 0 || !containerRef.current) return;
     const el = containerRef.current;
-    const rowTop = selIdx * ROW_H, rowBot = rowTop + ROW_H;
+    const rowTop = HEADER_H + selIdx * ROW_H;
+    const rowBot = rowTop + ROW_H;
     if (rowTop < el.scrollTop) el.scrollTop = rowTop;
     else if (rowBot > el.scrollTop + el.clientHeight) el.scrollTop = rowBot - el.clientHeight;
   }, [selIdx]);
-  const totalH = rows.length * ROW_H;
+
+  // Virtual window accounts for sticky header height
+  const bodyScrollTop = Math.max(0, scrollTop - HEADER_H);
+  const bodyHeight    = height - HEADER_H;
   const OVERSCAN = 10;
-  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-  const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
+  const startIdx = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN);
+  const endIdx   = Math.min(rows.length, Math.ceil((bodyScrollTop + bodyHeight) / ROW_H) + OVERSCAN);
   const visible  = rows.slice(startIdx, endIdx);
+  const totalBodyH = rows.length * ROW_H;
+
+  const cw = k => (colWidths && colWidths[k]) || (k === 'tag' ? 40 : k === 'pages' ? 55 : k === 'docid' ? 160 : 140);
+  const hidden = k => hiddenCols && hiddenCols.has(k);
+
   return (
-    <div ref={containerRef} onScroll={e => setScrollTop(e.target.scrollTop)} style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-      <div style={{ height: totalH, position: 'relative' }}>
-        <div style={{ position: 'absolute', top: startIdx * ROW_H, left: 0, right: 0 }}>
-          <table style={{ borderCollapse: 'collapse', width: '100%', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
-            <tbody>
-              {visible.map((row, vi) => {
-                const ri = startIdx + vi;
-                const isSel = row.docId === selDocId;
-                const isMulti = selectedDocIds && selectedDocIds.has(row.docId);
-                const isHov = hovRow === ri;
-                const bg = isSel ? P.rowSel : isMulti ? P.multiSel : isHov ? P.rowHov : 'transparent';
-                const tag = tagMap && tagMap.get(row.docId);
-                return (
-                  <tr key={row.docId}
-                    onClick={e => onMultiSelect ? onMultiSelect(row.docId, e) : onSelect(row.docId)}
-                    onMouseEnter={() => setHovRow(ri)} onMouseLeave={() => setHovRow(null)}
-                    style={{ height: ROW_H, background: bg, cursor: 'pointer', borderBottom: '1px solid ' + P.border }}>
-                    <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
-                    {/* Tag column */}
-                    {!hiddenCols || !hiddenCols.has('tag') ? (
-                      <td style={{ width: colWidths && colWidths['tag'] || 40, padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center', overflow: 'hidden' }}>
-                        {tag === 'responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.green, background: 'rgba(63,185,80,0.12)', padding: '1px 5px', borderRadius: 3 }}>R</span>}
-                        {tag === 'not_responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.red, background: 'rgba(248,81,73,0.12)', padding: '1px 5px', borderRadius: 3 }}>NR</span>}
-                      </td>
-                    ) : null}
-                    {!hiddenCols || !hiddenCols.has('docid') ? (
-                      <td style={{ width: colWidths && colWidths['docid'] || 160, padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>
-                    ) : null}
-                    {headers.slice(1).map((h, ci) => (!hiddenCols || !hiddenCols.has('col' + ci)) && (
-                      <td key={ci} style={{ width: colWidths && colWidths['col' + ci] || 140, padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {row.fields[ci + 1] || ''}
-                      </td>
-                    ))}
-                    {!hiddenCols || !hiddenCols.has('pages') ? (
-                      <td style={{ width: colWidths && colWidths['pages'] || 55, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'center', fontSize: 11 }}>{row.pages.length}</td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div ref={containerRef} onScroll={e => setScrollTop(e.target.scrollTop)}
+      style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+      <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
+        {/* ── Sticky header ── */}
+        <thead style={{ position: 'sticky', top: 0, zIndex: 2 }}>
+          <tr style={{ background: P.surface, borderBottom: '2px solid ' + P.border }}>
+            <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
+            {!hidden('tag') && <ResizableTh colKey="tag" width={cw('tag')} onResize={w => setColWidths(p => ({ ...p, tag: w }))} onSort={() => onSort('tag')} active={sortCol === 'tag'} sortDir={sortDir}>Tag</ResizableTh>}
+            {!hidden('docid') && <ResizableTh colKey="docid" width={cw('docid')} onResize={w => setColWidths(p => ({ ...p, docid: w }))} onSort={() => onSort(-1)} active={sortCol === -1} sortDir={sortDir}>DOCID</ResizableTh>}
+            {headers.slice(1).map((h, i) => !hidden('col' + i) && (
+              <ResizableTh key={i} colKey={'col' + i} width={cw('col' + i)} onResize={w => setColWidths(p => ({ ...p, ['col' + i]: w }))} onSort={() => onSort(i + 1)} active={sortCol === (i + 1)} sortDir={sortDir}>{h}</ResizableTh>
+            ))}
+            {!hidden('pages') && <ResizableTh colKey="pages" width={cw('pages')} onResize={w => setColWidths(p => ({ ...p, pages: w }))} onSort={() => onSort('pages')} active={sortCol === 'pages'} sortDir={sortDir} align="center">Pages</ResizableTh>}
+            {/* Show/hide button */}
+            <th style={{ width: 28, padding: 0, borderLeft: '1px solid ' + P.border, background: P.surface, position: 'relative' }}>
+              <button onClick={e => { e.stopPropagation(); setShowColMenu(v => !v); }} title="Show/hide columns"
+                style={{ width: '100%', height: '100%', background: showColMenu ? P.accentGlow : 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 12, padding: '4px 0' }}>⋮</button>
+              {showColMenu && (
+                <div onClick={e => e.stopPropagation()} style={{ position: 'absolute', top: '100%', right: 0, marginTop: 2, background: P.surface, border: '1px solid ' + P.border, borderRadius: 6, zIndex: 300, minWidth: 180, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '6px 0' }}>
+                  <div style={{ padding: '4px 12px 6px', fontFamily: mono, fontSize: 10, color: P.dim, borderBottom: '1px solid ' + P.border, marginBottom: 2 }}>Show / Hide Columns</div>
+                  <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+                    {[['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
+                      const visible = !hidden(key);
+                      return (
+                        <div key={key} onClick={() => setHiddenCols(prev => { const n = new Set(prev); visible ? n.add(key) : n.delete(key); return n; })}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, color: visible ? P.text : P.dim }}
+                          onMouseEnter={e => e.currentTarget.style.background = P.rowHov}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          <div style={{ width: 14, height: 14, borderRadius: 3, border: '2px solid ' + (visible ? P.accent : P.border), background: visible ? P.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            {visible && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="#0E1117" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span style={{ fontFamily: mono, fontSize: 11 }}>{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ borderTop: '1px solid ' + P.border, marginTop: 2, padding: '5px 12px' }}>
+                    <button onClick={() => setHiddenCols(new Set())} style={{ background: 'transparent', border: 'none', color: P.accent, cursor: 'pointer', fontSize: 11, fontFamily: mono, padding: 0 }}>Show all</button>
+                  </div>
+                </div>
+              )}
+            </th>
+          </tr>
+        </thead>
+        {/* ── Body spacer + virtual rows ── */}
+        <tbody>
+          {/* Top spacer */}
+          {startIdx > 0 && <tr style={{ height: startIdx * ROW_H }}><td colSpan={99} /></tr>}
+          {visible.map((row, vi) => {
+            const ri = startIdx + vi;
+            const isSel  = row.docId === selDocId;
+            const isMulti = selectedDocIds && selectedDocIds.has(row.docId);
+            const isHov  = hovRow === ri;
+            const bg = isSel ? P.rowSel : isMulti ? P.multiSel : isHov ? P.rowHov : 'transparent';
+            const tag = tagMap && tagMap.get(row.docId);
+            return (
+              <tr key={row.docId}
+                onClick={e => onMultiSelect ? onMultiSelect(row.docId, e) : onSelect(row.docId)}
+                onMouseEnter={() => setHovRow(ri)} onMouseLeave={() => setHovRow(null)}
+                style={{ height: ROW_H, background: bg, cursor: 'pointer', borderBottom: '1px solid ' + P.border }}>
+                <td style={{ width: 44, padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'right', fontSize: 11 }}>{ri + 1}</td>
+                {!hidden('tag') && (
+                  <td style={{ width: cw('tag'), padding: '0 4px', borderRight: '1px solid ' + P.border, textAlign: 'center', overflow: 'hidden' }}>
+                    {tag === 'responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.green, background: 'rgba(63,185,80,0.12)', padding: '1px 5px', borderRadius: 3 }}>R</span>}
+                    {tag === 'not_responsive' && <span style={{ fontSize: 9, fontWeight: 700, color: P.red, background: 'rgba(248,81,73,0.12)', padding: '1px 5px', borderRadius: 3 }}>NR</span>}
+                  </td>
+                )}
+                {!hidden('docid') && <td style={{ width: cw('docid'), padding: '0 10px', borderRight: '1px solid ' + P.border, color: isSel ? P.accent : P.text, fontWeight: isSel ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.docId}</td>}
+                {headers.slice(1).map((h, ci) => !hidden('col' + ci) && (
+                  <td key={ci} style={{ width: cw('col' + ci), padding: '0 10px', borderRight: '1px solid ' + P.border, color: P.dim, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.fields[ci + 1] || ''}</td>
+                ))}
+                {!hidden('pages') && <td style={{ width: cw('pages'), padding: '0 8px', borderRight: '1px solid ' + P.border, color: P.dim, textAlign: 'center', fontSize: 11 }}>{row.pages.length}</td>}
+                <td style={{ width: 28 }} />
+              </tr>
+            );
+          })}
+          {/* Bottom spacer */}
+          {endIdx < rows.length && <tr style={{ height: (rows.length - endIdx) * ROW_H }}><td colSpan={99} /></tr>}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1084,69 +1133,14 @@ function App() {
               );
             })}
           </div>
-          {/* Column headers with resize + show/hide */}
-          <div style={{ overflowX: 'auto', flexShrink: 0, borderBottom: '2px solid ' + P.border, position: 'relative' }}>
-            <table style={{ borderCollapse: 'collapse', fontFamily: mono, fontSize: 12, whiteSpace: 'nowrap', tableLayout: 'fixed' }}>
-              <thead>
-                <tr style={{ background: P.surface }}>
-                  <th style={{ width: 44, padding: '6px 8px', borderRight: '1px solid ' + P.border, color: P.dim, fontWeight: 600, fontSize: 11 }}>#</th>
-                  {!hiddenCols.has('tag') && (
-                    <ResizableTh colKey="tag" width={colWidths['tag'] || 40} onResize={w => setColWidths(p => ({ ...p, tag: w }))} onSort={() => toggleSort('tag')} active={sortCol === 'tag'} sortDir={sortDir}>
-                      Tag
-                    </ResizableTh>
-                  )}
-                  {!hiddenCols.has('docid') && (
-                    <ResizableTh colKey="docid" width={colWidths['docid'] || 160} onResize={w => setColWidths(p => ({ ...p, docid: w }))} onSort={() => toggleSort(-1)} active={sortCol === -1} sortDir={sortDir}>
-                      DOCID
-                    </ResizableTh>
-                  )}
-                  {headers.slice(1).map((h, i) => !hiddenCols.has('col' + i) && (
-                    <ResizableTh key={i} colKey={'col' + i} width={colWidths['col' + i] || 140} onResize={w => setColWidths(p => ({ ...p, ['col' + i]: w }))} onSort={() => toggleSort(i + 1)} active={sortCol === (i + 1)} sortDir={sortDir}>
-                      {h}
-                    </ResizableTh>
-                  ))}
-                  {!hiddenCols.has('pages') && (
-                    <ResizableTh colKey="pages" width={colWidths['pages'] || 55} onResize={w => setColWidths(p => ({ ...p, pages: w }))} onSort={() => toggleSort('pages')} active={sortCol === 'pages'} sortDir={sortDir} align="center">
-                      Pages
-                    </ResizableTh>
-                  )}
-                  {/* Show/hide columns button — always last */}
-                  <th style={{ width: 28, padding: 0, borderLeft: '1px solid ' + P.border, background: P.surface, position: 'relative' }}>
-                    <button onClick={e => { e.stopPropagation(); setShowColMenu(v => !v); }}
-                      title="Show/hide columns"
-                      style={{ width: '100%', height: '100%', background: showColMenu ? P.accentGlow : 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 12, padding: '4px 0' }}>
-                      ⋮
-                    </button>
-                    {showColMenu && (
-                      <div onClick={e => e.stopPropagation()} style={{ position: 'absolute', top: '100%', right: 0, marginTop: 2, background: P.surface, border: '1px solid ' + P.border, borderRadius: 6, zIndex: 300, minWidth: 180, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '6px 0' }}>
-                        <div style={{ padding: '4px 12px 6px', fontFamily: mono, fontSize: 10, color: P.dim, borderBottom: '1px solid ' + P.border, marginBottom: 2 }}>Show / Hide Columns</div>
-                        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-                          {[['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
-                            const visible = !hiddenCols.has(key);
-                            return (
-                              <div key={key} onClick={() => setHiddenCols(prev => { const n = new Set(prev); visible ? n.add(key) : n.delete(key); return n; })}
-                                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 12, color: visible ? P.text : P.dim }}
-                                onMouseEnter={e => e.currentTarget.style.background = P.rowHov}
-                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                                <div style={{ width: 14, height: 14, borderRadius: 3, border: '2px solid ' + (visible ? P.accent : P.border), background: visible ? P.accent : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                  {visible && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="#0E1117" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                                </div>
-                                <span style={{ fontFamily: mono, fontSize: 11 }}>{label}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div style={{ borderTop: '1px solid ' + P.border, marginTop: 2, padding: '5px 12px' }}>
-                          <button onClick={() => setHiddenCols(new Set())} style={{ background: 'transparent', border: 'none', color: P.accent, cursor: 'pointer', fontSize: 11, fontFamily: mono, padding: 0 }}>Show all</button>
-                        </div>
-                      </div>
-                    )}
-                  </th>
-                </tr>
-              </thead>
-            </table>
-          </div>
-          <VirtualGrid rows={filteredRows} headers={headers} selDocId={selDocId} selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect} tagMap={tagMap} hiddenCols={hiddenCols} colWidths={colWidths} />
+          <VirtualGrid
+            rows={filteredRows} headers={headers} selDocId={selDocId}
+            selectedDocIds={selectedDocIds} onSelect={selectDoc} onMultiSelect={handleMultiSelect}
+            tagMap={tagMap} hiddenCols={hiddenCols} colWidths={colWidths}
+            sortCol={sortCol} sortDir={sortDir} onSort={toggleSort}
+            showColMenu={showColMenu} setShowColMenu={setShowColMenu}
+            setHiddenCols={setHiddenCols} setColWidths={setColWidths}
+          />
         </div>
 
         {/* ── Image panel ── */}
