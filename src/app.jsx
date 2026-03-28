@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.8.1 · 2026-03-27';
+const APP_VERSION = 'v1.8.2 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1728,6 +1728,24 @@ function App() {
   }, [syncCol, allRows, docs, syncMappings, tagMap, executeSyncTags]);
 
   // ── Landing ──────────────────────────────────────────────────────────────
+  // Ordered column key list — always computed (hooks must not be conditional)
+  const defaultColKeys = React.useMemo(() =>
+    ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'],
+    [headers]
+  );
+  const orderedColKeys = React.useMemo(() => {
+    if (!colOrder) return defaultColKeys;
+    const extra = defaultColKeys.filter(k => !colOrder.includes(k));
+    return [...colOrder.filter(k => defaultColKeys.includes(k)), ...extra];
+  }, [colOrder, defaultColKeys]);
+  const colLabel = k => {
+    if (k === 'tag')   return 'Tag';
+    if (k === 'docid') return 'DOCID';
+    if (k === 'pages') return 'Pages';
+    const i = parseInt(k.slice(3));
+    return headers[i + 1] || k;
+  };
+
   if (!launched) {
     const canLaunch = docs.length > 0 && Object.keys(fileIndex).length > 0;
     return (
@@ -1792,33 +1810,6 @@ function App() {
     );
   }
 
-  // ── Main viewer ───────────────────────────────────────────────────────────
-  const GRID_W = selDocId ? '55%' : '100%';
-  const IMG_W  = selDocId ? '45%' : '0';
-  const rCnt = [...tagMap.values()].filter(v => v === 'responsive').length;
-  const nrCnt = [...tagMap.values()].filter(v => v === 'not_responsive').length;
-  const untaggedCnt = gridRows.length - tagMap.size;
-
-  // Ordered column key list — default: tag, docid, col0..colN, pages
-  const defaultColKeys = React.useMemo(() =>
-    ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'],
-    [headers]
-  );
-  const orderedColKeys = React.useMemo(() => {
-    if (!colOrder) return defaultColKeys;
-    // Keep any new keys from defaultColKeys that aren't in colOrder yet
-    const extra = defaultColKeys.filter(k => !colOrder.includes(k));
-    return [...colOrder.filter(k => defaultColKeys.includes(k)), ...extra];
-  }, [colOrder, defaultColKeys]);
-
-  // col key → label for the dropdown
-  const colLabel = k => {
-    if (k === 'tag')   return 'Tag';
-    if (k === 'docid') return 'DOCID';
-    if (k === 'pages') return 'Pages';
-    const i = parseInt(k.slice(3));
-    return headers[i + 1] || k;
-  };
   const isRotated90 = rotation === 90 || rotation === 270;
 
   return (
