@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.8.3 · 2026-03-27';
+const APP_VERSION = 'v1.8.4 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1815,6 +1815,8 @@ function App() {
     );
   }
 
+  const GRID_W     = selDocId ? '55%' : '100%';
+  const IMG_W      = selDocId ? '45%' : '0';
   const isRotated90 = rotation === 90 || rotation === 270;
 
   return (
