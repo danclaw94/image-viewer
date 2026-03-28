@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.8.2 · 2026-03-27';
+const APP_VERSION = 'v1.8.3 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1728,6 +1728,11 @@ function App() {
   }, [syncCol, allRows, docs, syncMappings, tagMap, executeSyncTags]);
 
   // ── Landing ──────────────────────────────────────────────────────────────
+  // Tag counts — always computed before any conditional return
+  const rCnt      = [...tagMap.values()].filter(v => v === 'responsive').length;
+  const nrCnt     = [...tagMap.values()].filter(v => v === 'not_responsive').length;
+  const untaggedCnt = gridRows.length - tagMap.size;
+
   // Ordered column key list — always computed (hooks must not be conditional)
   const defaultColKeys = React.useMemo(() =>
     ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'],
