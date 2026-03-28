@@ -21,7 +21,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.8.0 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.8.1 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -644,6 +644,146 @@ function ResizableTh({
 }
 
 // ── VirtualGrid ───────────────────────────────────────────────────────────
+// ── DraggableColList — columns dropdown with drag-to-reorder ─────────────
+function DraggableColList({
+  orderedColKeys,
+  hiddenCols,
+  setHiddenCols,
+  setColOrder,
+  colLabel
+}) {
+  const [dragIdx, setDragIdx] = React.useState(null);
+  const [dragOverIdx, setDragOverIdx] = React.useState(null);
+  const onDragStart = i => setDragIdx(i);
+  const onDragOver = (e, i) => {
+    e.preventDefault();
+    setDragOverIdx(i);
+  };
+  const onDragEnd = () => {
+    if (dragIdx !== null && dragOverIdx !== null && dragIdx !== dragOverIdx) {
+      const next = [...orderedColKeys];
+      const [moved] = next.splice(dragIdx, 1);
+      next.splice(dragOverIdx, 0, moved);
+      setColOrder(next);
+    }
+    setDragIdx(null);
+    setDragOverIdx(null);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxHeight: 260,
+      overflowY: 'auto'
+    }
+  }, orderedColKeys.map((key, i) => {
+    const vis = !(hiddenCols && hiddenCols.has(key));
+    const isDragging = dragIdx === i;
+    const isOver = dragOverIdx === i;
+    return /*#__PURE__*/React.createElement("div", {
+      key: key,
+      draggable: true,
+      onDragStart: () => onDragStart(i),
+      onDragOver: e => onDragOver(e, i),
+      onDragEnd: onDragEnd,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '5px 10px 5px 6px',
+        cursor: 'grab',
+        userSelect: 'none',
+        background: isOver ? P.accentGlow : isDragging ? P.rowHov : 'transparent',
+        borderLeft: isOver ? '3px solid ' + P.accent : '3px solid transparent',
+        opacity: isDragging ? 0.5 : 1,
+        transition: 'background 0.08s'
+      },
+      onMouseEnter: e => {
+        if (dragIdx === null) e.currentTarget.style.background = P.rowHov;
+      },
+      onMouseLeave: e => {
+        if (dragIdx === null) e.currentTarget.style.background = 'transparent';
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "8",
+      height: "14",
+      viewBox: "0 0 8 14",
+      fill: "none",
+      style: {
+        flexShrink: 0,
+        opacity: 0.35
+      }
+    }, /*#__PURE__*/React.createElement("circle", {
+      cx: "2.5",
+      cy: "2.5",
+      r: "1.5",
+      fill: P.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "5.5",
+      cy: "2.5",
+      r: "1.5",
+      fill: P.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "2.5",
+      cy: "7",
+      r: "1.5",
+      fill: P.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "5.5",
+      cy: "7",
+      r: "1.5",
+      fill: P.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "2.5",
+      cy: "11.5",
+      r: "1.5",
+      fill: P.dim
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "5.5",
+      cy: "11.5",
+      r: "1.5",
+      fill: P.dim
+    })), /*#__PURE__*/React.createElement("div", {
+      onClick: e => {
+        e.stopPropagation();
+        setHiddenCols(prev => {
+          const n = new Set(prev);
+          vis ? n.add(key) : n.delete(key);
+          return n;
+        });
+      },
+      style: {
+        width: 15,
+        height: 15,
+        borderRadius: 3,
+        border: '2px solid ' + (vis ? P.accent : P.border),
+        background: vis ? P.accent : 'transparent',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        transition: 'all 0.1s',
+        cursor: 'pointer'
+      }
+    }, vis && /*#__PURE__*/React.createElement("svg", {
+      width: "9",
+      height: "7",
+      viewBox: "0 0 9 7",
+      fill: "none"
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M1 3.5L3.5 6L8 1",
+      stroke: "#0E1117",
+      strokeWidth: "1.8",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }))), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: "'JetBrains Mono','Fira Code','SF Mono',monospace",
+        fontSize: 11,
+        color: vis ? P.text : P.dim,
+        flex: 1
+      }
+    }, colLabel(key)));
+  }));
+}
 function VirtualGrid({
   rows,
   headers,
@@ -657,7 +797,9 @@ function VirtualGrid({
   sortCol,
   sortDir,
   onSort,
-  setColWidths
+  setColWidths,
+  orderedColKeys,
+  colLabel
 }) {
   const containerRef = React.useRef(null);
   const [scrollTop, setScrollTop] = React.useState(0);
@@ -727,49 +869,61 @@ function VirtualGrid({
       fontWeight: 600,
       fontSize: 11
     }
-  }, "#"), !hidden('tag') && /*#__PURE__*/React.createElement(ResizableTh, {
-    colKey: "tag",
-    width: cw('tag'),
-    onResize: w => setColWidths(p => ({
-      ...p,
-      tag: w
-    })),
-    onSort: () => onSort('tag'),
-    active: sortCol === 'tag',
-    sortDir: sortDir
-  }, "Tag"), !hidden('docid') && /*#__PURE__*/React.createElement(ResizableTh, {
-    colKey: "docid",
-    width: cw('docid'),
-    onResize: w => setColWidths(p => ({
-      ...p,
-      docid: w
-    })),
-    onSort: () => onSort(-1),
-    active: sortCol === -1,
-    sortDir: sortDir
-  }, "DOCID"), headers.slice(1).map((h, i) => !hidden('col' + i) && /*#__PURE__*/React.createElement(ResizableTh, {
-    key: i,
-    colKey: 'col' + i,
-    width: cw('col' + i),
-    onResize: w => setColWidths(p => ({
-      ...p,
-      ['col' + i]: w
-    })),
-    onSort: () => onSort(i + 1),
-    active: sortCol === i + 1,
-    sortDir: sortDir
-  }, h)), !hidden('pages') && /*#__PURE__*/React.createElement(ResizableTh, {
-    colKey: "pages",
-    width: cw('pages'),
-    onResize: w => setColWidths(p => ({
-      ...p,
-      pages: w
-    })),
-    onSort: () => onSort('pages'),
-    active: sortCol === 'pages',
-    sortDir: sortDir,
-    align: "center"
-  }, "Pages"))), /*#__PURE__*/React.createElement("tbody", null, startIdx > 0 && /*#__PURE__*/React.createElement("tr", {
+  }, "#"), (orderedColKeys || ['tag', 'docid', 'pages']).map(key => {
+    if (hidden(key)) return null;
+    if (key === 'tag') return /*#__PURE__*/React.createElement(ResizableTh, {
+      key: "tag",
+      colKey: "tag",
+      width: cw('tag'),
+      onResize: w => setColWidths(p => ({
+        ...p,
+        tag: w
+      })),
+      onSort: () => onSort('tag'),
+      active: sortCol === 'tag',
+      sortDir: sortDir
+    }, "Tag");
+    if (key === 'docid') return /*#__PURE__*/React.createElement(ResizableTh, {
+      key: "docid",
+      colKey: "docid",
+      width: cw('docid'),
+      onResize: w => setColWidths(p => ({
+        ...p,
+        docid: w
+      })),
+      onSort: () => onSort(-1),
+      active: sortCol === -1,
+      sortDir: sortDir
+    }, "DOCID");
+    if (key === 'pages') return /*#__PURE__*/React.createElement(ResizableTh, {
+      key: "pages",
+      colKey: "pages",
+      width: cw('pages'),
+      onResize: w => setColWidths(p => ({
+        ...p,
+        pages: w
+      })),
+      onSort: () => onSort('pages'),
+      active: sortCol === 'pages',
+      sortDir: sortDir,
+      align: "center"
+    }, "Pages");
+    const i = parseInt(key.slice(3));
+    const h = headers[i + 1];
+    if (!h) return null;
+    return /*#__PURE__*/React.createElement(ResizableTh, {
+      key: key,
+      colKey: key,
+      width: cw(key),
+      onResize: w => setColWidths(p => ({
+        ...p,
+        [key]: w
+      })),
+      onSort: () => onSort(i + 1),
+      active: sortCol === i + 1,
+      sortDir: sortDir
+    }, h);
+  }))), /*#__PURE__*/React.createElement("tbody", null, startIdx > 0 && /*#__PURE__*/React.createElement("tr", {
     style: {
       height: startIdx * ROW_H
     }
@@ -802,62 +956,72 @@ function VirtualGrid({
         textAlign: 'right',
         fontSize: 11
       }
-    }, ri + 1), !hidden('tag') && /*#__PURE__*/React.createElement("td", {
-      style: {
-        width: cw('tag'),
-        padding: '0 4px',
-        borderRight: '1px solid ' + P.border,
-        textAlign: 'center',
-        overflow: 'hidden'
-      }
-    }, tag === 'responsive' && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 9,
-        fontWeight: 700,
-        color: P.green,
-        background: 'rgba(63,185,80,0.12)',
-        padding: '1px 5px',
-        borderRadius: 3
-      }
-    }, "R"), tag === 'not_responsive' && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 9,
-        fontWeight: 700,
-        color: P.red,
-        background: 'rgba(248,81,73,0.12)',
-        padding: '1px 5px',
-        borderRadius: 3
-      }
-    }, "NR")), !hidden('docid') && /*#__PURE__*/React.createElement("td", {
-      style: {
-        width: cw('docid'),
-        padding: '0 10px',
-        borderRight: '1px solid ' + P.border,
-        color: isSel ? P.accent : P.text,
-        fontWeight: isSel ? 600 : 400,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
-      }
-    }, row.docId), headers.slice(1).map((h, ci) => !hidden('col' + ci) && /*#__PURE__*/React.createElement("td", {
-      key: ci,
-      style: {
-        width: cw('col' + ci),
-        padding: '0 10px',
-        borderRight: '1px solid ' + P.border,
-        color: P.dim,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
-      }
-    }, row.fields[ci + 1] || '')), !hidden('pages') && /*#__PURE__*/React.createElement("td", {
-      style: {
-        width: cw('pages'),
-        padding: '0 8px',
-        borderRight: '1px solid ' + P.border,
-        color: P.dim,
-        textAlign: 'center',
-        fontSize: 11
-      }
-    }, row.pages.length), /*#__PURE__*/React.createElement("td", {
+    }, ri + 1), (orderedColKeys || ['tag', 'docid', 'pages']).map(key => {
+      if (hidden(key)) return null;
+      if (key === 'tag') return /*#__PURE__*/React.createElement("td", {
+        key: "tag",
+        style: {
+          width: cw('tag'),
+          padding: '0 4px',
+          borderRight: '1px solid ' + P.border,
+          textAlign: 'center',
+          overflow: 'hidden'
+        }
+      }, tag === 'responsive' && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 9,
+          fontWeight: 700,
+          color: P.green,
+          background: 'rgba(63,185,80,0.12)',
+          padding: '1px 5px',
+          borderRadius: 3
+        }
+      }, "R"), tag === 'not_responsive' && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 9,
+          fontWeight: 700,
+          color: P.red,
+          background: 'rgba(248,81,73,0.12)',
+          padding: '1px 5px',
+          borderRadius: 3
+        }
+      }, "NR"));
+      if (key === 'docid') return /*#__PURE__*/React.createElement("td", {
+        key: "docid",
+        style: {
+          width: cw('docid'),
+          padding: '0 10px',
+          borderRight: '1px solid ' + P.border,
+          color: isSel ? P.accent : P.text,
+          fontWeight: isSel ? 600 : 400,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }
+      }, row.docId);
+      if (key === 'pages') return /*#__PURE__*/React.createElement("td", {
+        key: "pages",
+        style: {
+          width: cw('pages'),
+          padding: '0 8px',
+          borderRight: '1px solid ' + P.border,
+          color: P.dim,
+          textAlign: 'center',
+          fontSize: 11
+        }
+      }, row.pages.length);
+      const ci = parseInt(key.slice(3));
+      return /*#__PURE__*/React.createElement("td", {
+        key: key,
+        style: {
+          width: cw(key),
+          padding: '0 10px',
+          borderRight: '1px solid ' + P.border,
+          color: P.dim,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }
+      }, row.fields[ci + 1] || '');
+    }), /*#__PURE__*/React.createElement("td", {
       style: {
         width: 28
       }
@@ -958,6 +1122,7 @@ function App() {
   const [hiddenCols, setHiddenCols] = React.useState(new Set());
   const [colWidths, setColWidths] = React.useState({}); // colKey → px width
   const [showColMenu, setShowColMenu] = React.useState(false);
+  const [colOrder, setColOrder] = React.useState(null); // null = default order; array of keys when reordered
 
   // Settings
   const [showSettings, setShowSettings] = React.useState(false);
@@ -1041,6 +1206,7 @@ function App() {
       if (data.search) setSearch(data.search);
       if (data.hiddenCols) setHiddenCols(new Set(data.hiddenCols));
       if (data.colWidths) setColWidths(data.colWidths);
+      if (data.colOrder) setColOrder(data.colOrder);
     } catch {}
   }, [launched]);
 
@@ -1054,10 +1220,11 @@ function App() {
         selDocId,
         search,
         hiddenCols: [...hiddenCols],
-        colWidths
+        colWidths,
+        colOrder
       }));
     } catch {}
-  }, [tagMap, tagFilter, selDocId, search, hiddenCols, colWidths, launched, optFile]);
+  }, [tagMap, tagFilter, selDocId, search, hiddenCols, colWidths, colOrder, launched, optFile]);
   const persistResumeInfo = updates => {
     const current = loadResumeInfo() || {};
     const next = {
@@ -2428,6 +2595,7 @@ function App() {
     setSyncValues(null);
     setSyncMappings({});
     setSyncTooMany(false);
+    setColOrder(null);
   };
 
   // ── Sync Tags ──────────────────────────────────────────────────────────────
@@ -2744,6 +2912,24 @@ function App() {
   const rCnt = [...tagMap.values()].filter(v => v === 'responsive').length;
   const nrCnt = [...tagMap.values()].filter(v => v === 'not_responsive').length;
   const untaggedCnt = gridRows.length - tagMap.size;
+
+  // Ordered column key list — default: tag, docid, col0..colN, pages
+  const defaultColKeys = React.useMemo(() => ['tag', 'docid', ...headers.slice(1).map((h, i) => 'col' + i), 'pages'], [headers]);
+  const orderedColKeys = React.useMemo(() => {
+    if (!colOrder) return defaultColKeys;
+    // Keep any new keys from defaultColKeys that aren't in colOrder yet
+    const extra = defaultColKeys.filter(k => !colOrder.includes(k));
+    return [...colOrder.filter(k => defaultColKeys.includes(k)), ...extra];
+  }, [colOrder, defaultColKeys]);
+
+  // col key → label for the dropdown
+  const colLabel = k => {
+    if (k === 'tag') return 'Tag';
+    if (k === 'docid') return 'DOCID';
+    if (k === 'pages') return 'Pages';
+    const i = parseInt(k.slice(3));
+    return headers[i + 1] || k;
+  };
   const isRotated90 = rotation === 90 || rotation === 270;
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3275,61 +3461,13 @@ function App() {
       fontFamily: mono,
       padding: 0
     }
-  }, "None"))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      maxHeight: 260,
-      overflowY: 'auto'
-    }
-  }, [['tag', 'Tag'], ['docid', 'DOCID'], ...headers.slice(1).map((h, i) => ['col' + i, h]), ['pages', 'Pages']].map(([key, label]) => {
-    const vis = !(hiddenCols && hiddenCols.has(key));
-    return /*#__PURE__*/React.createElement("div", {
-      key: key,
-      onClick: () => setHiddenCols(prev => {
-        const n = new Set(prev);
-        vis ? n.add(key) : n.delete(key);
-        return n;
-      }),
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 9,
-        padding: '6px 14px',
-        cursor: 'pointer'
-      },
-      onMouseEnter: e => e.currentTarget.style.background = P.rowHov,
-      onMouseLeave: e => e.currentTarget.style.background = 'transparent'
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 15,
-        height: 15,
-        borderRadius: 3,
-        border: '2px solid ' + (vis ? P.accent : P.border),
-        background: vis ? P.accent : 'transparent',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-        transition: 'all 0.1s'
-      }
-    }, vis && /*#__PURE__*/React.createElement("svg", {
-      width: "9",
-      height: "7",
-      viewBox: "0 0 9 7",
-      fill: "none"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M1 3.5L3.5 6L8 1",
-      stroke: "#0E1117",
-      strokeWidth: "1.8",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }))), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontFamily: mono,
-        fontSize: 11,
-        color: vis ? P.text : P.dim
-      }
-    }, label));
-  }))))), /*#__PURE__*/React.createElement(VirtualGrid, {
+  }, "None"))), /*#__PURE__*/React.createElement(DraggableColList, {
+    orderedColKeys: orderedColKeys,
+    hiddenCols: hiddenCols,
+    setHiddenCols: setHiddenCols,
+    setColOrder: setColOrder,
+    colLabel: colLabel
+  })))), /*#__PURE__*/React.createElement(VirtualGrid, {
     rows: filteredRows,
     headers: headers,
     selDocId: selDocId,
@@ -3342,7 +3480,9 @@ function App() {
     sortCol: sortCol,
     sortDir: sortDir,
     onSort: toggleSort,
-    setColWidths: setColWidths
+    setColWidths: setColWidths,
+    orderedColKeys: orderedColKeys,
+    colLabel: colLabel
   })), selDocId && /*#__PURE__*/React.createElement("div", {
     style: {
       width: IMG_W,
