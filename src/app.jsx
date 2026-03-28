@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.7.4 · 2026-03-27';
+const APP_VERSION = 'v1.8.0 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -504,6 +504,18 @@ function VirtualGrid({ rows, headers, selDocId, selectedDocIds, onSelect, onMult
 }
 
 // ── PrintMenuItem ─────────────────────────────────────────────────────────
+function MappingBtn({ label, active, color, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      background: active ? (color + '22') : 'transparent',
+      border: '1px solid ' + (active ? color : P.border),
+      color: active ? color : P.dim,
+      borderRadius: 4, padding: '2px 8px', cursor: 'pointer',
+      fontSize: 10, fontWeight: 600, minWidth: 28,
+    }}>{label}</button>
+  );
+}
+
 function PrintMenuItem({ label, count, disabled, onClick }) {
   const [hov, setHov] = React.useState(false);
   return (
@@ -579,6 +591,13 @@ function App() {
   const [showJump,     setShowJump]     = React.useState(false);
   const [stateNotice,  setStateNotice]  = React.useState(null);
   const [qcExportMenu, setQcExportMenu] = React.useState(false);
+
+  // Sync Tags state
+  const [showSyncTags, setShowSyncTags] = React.useState(false);
+  const [syncCol,      setSyncCol]      = React.useState(null);
+  const [syncValues,   setSyncValues]   = React.useState(null);
+  const [syncTooMany,  setSyncTooMany]  = React.useState(false);
+  const [syncMappings, setSyncMappings] = React.useState({});
 
   const imgAreaRef   = React.useRef(null);
   const fileIndexRef = React.useRef({});
@@ -848,7 +867,8 @@ function App() {
   React.useEffect(() => {
     if (!selDocId) return;
     const handler = e => {
-      if (e.target.tagName === 'INPUT') return;
+      if (e.key === 'Escape' && showSyncTags) { closeSyncModal(); return; }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.key === 'r' || e.key === 'R') { e.preventDefault(); setTag(selDocId, tagMap.get(selDocId) === 'responsive' ? null : 'responsive'); return; }
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setTag(selDocId, tagMap.get(selDocId) === 'not_responsive' ? null : 'not_responsive'); return; }
       if (e.key === 'u' || e.key === 'U') { e.preventDefault(); setTag(selDocId, null); return; }
@@ -1560,7 +1580,81 @@ function App() {
     thumbCache.forEach(url => URL.revokeObjectURL(url)); thumbCache.clear();
     _handles.opt = null; _handles.dat = null; _handles.dir = null;
     clearResumeInfo(); setResumeInfo(null); setResumeError(null);
+    setShowSyncTags(false); setSyncCol(null); setSyncValues(null); setSyncMappings({}); setSyncTooMany(false);
   };
+
+  // ── Sync Tags ──────────────────────────────────────────────────────────────
+  const closeSyncModal = React.useCallback(() => {
+    setShowSyncTags(false); setSyncCol(null); setSyncValues(null); setSyncMappings({}); setSyncTooMany(false);
+  }, []);
+
+  const scanColumnValues = React.useCallback((colIndex) => {
+    const valueMap = {};
+    let uniqueCount = 0, tooMany = false;
+    for (const row of allRows) {
+      const raw = (row.fields[colIndex] || '').trim();
+      if (!raw) continue;
+      const key = raw.toLowerCase();
+      if (valueMap[key]) { valueMap[key].count++; }
+      else {
+        uniqueCount++;
+        if (uniqueCount > 20) { tooMany = true; break; }
+        valueMap[key] = { display: raw, count: 1 };
+      }
+    }
+    if (tooMany) {
+      setSyncValues(null); setSyncTooMany(true); setSyncMappings({});
+    } else {
+      const values = Object.entries(valueMap)
+        .map(([key, v]) => ({ value: key, displayValue: v.display, count: v.count }))
+        .sort((a, b) => b.count - a.count);
+      setSyncValues(values); setSyncTooMany(false); setSyncMappings({});
+    }
+  }, [allRows]);
+
+  const executeSyncTags = React.useCallback(() => {
+    const colIndex = syncCol;
+    const datMap2 = {};
+    for (const row of allRows) { const id = (row.fields[0] || '').trim(); if (id) datMap2[id] = row.fields; }
+    let tagged = 0, responsive = 0, notResponsive = 0;
+    setTagMap(prev => {
+      const next = new Map(prev);
+      for (const doc of docs) {
+        const fields = datMap2[doc.docId];
+        if (!fields) continue;
+        const raw = (fields[colIndex] || '').trim().toLowerCase();
+        if (!raw) continue;
+        const mapping = syncMappings[raw];
+        if (!mapping) continue;
+        next.set(doc.docId, mapping);
+        tagged++;
+        if (mapping === 'responsive') responsive++; else notResponsive++;
+      }
+      return next;
+    });
+    const unchanged = docs.length - tagged;
+    showNotice('ok', 'Synced ' + tagged.toLocaleString() + ' tags (' + responsive.toLocaleString() + ' Responsive, ' + notResponsive.toLocaleString() + ' Not Responsive). ' + unchanged.toLocaleString() + ' unchanged.', 5000);
+    closeSyncModal();
+  }, [syncCol, allRows, docs, syncMappings, showNotice, closeSyncModal]);
+
+  const handleSyncClick = React.useCallback(() => {
+    const colIndex = syncCol;
+    const datMap2 = {};
+    for (const row of allRows) { const id = (row.fields[0] || '').trim(); if (id) datMap2[id] = row.fields; }
+    let willTag = 0, willOverwrite = 0;
+    for (const doc of docs) {
+      const fields = datMap2[doc.docId];
+      if (!fields) continue;
+      const raw = (fields[colIndex] || '').trim().toLowerCase();
+      if (!raw || !syncMappings[raw]) continue;
+      willTag++;
+      if (tagMap.has(doc.docId)) willOverwrite++;
+    }
+    const msg = 'This will set tags on ' + willTag.toLocaleString() + ' documents.'
+      + (willOverwrite > 0 ? ' ' + willOverwrite.toLocaleString() + ' documents with existing tags will be overwritten.' : '')
+      + ' Continue?';
+    if (window.confirm(msg)) executeSyncTags();
+  }, [syncCol, allRows, docs, syncMappings, tagMap, executeSyncTags]);
 
   // ── Landing ──────────────────────────────────────────────────────────────
   if (!launched) {
@@ -1665,6 +1759,11 @@ function App() {
             placeholder="Bates # or row #"
             style={{ background: P.bg, border: '1px solid ' + P.accent, color: P.text, borderRadius: 4, padding: '4px 8px', fontFamily: mono, fontSize: 11, outline: 'none', width: 140 }} />
         )}
+        {/* Sync Tags */}
+        <button onClick={() => setShowSyncTags(true)} disabled={!datFile || docs.length === 0}
+          style={{ background: 'transparent', border: '1px solid ' + P.border, color: datFile ? P.text : P.dim, padding: '4px 10px', borderRadius: 6, cursor: datFile ? 'pointer' : 'default', fontSize: 12, opacity: datFile ? 1 : 0.5 }}>
+          Sync Tags
+        </button>
         {/* Export DAT */}
         <button onClick={() => setShowExportDat(true)} disabled={tagMap.size === 0}
           style={{ background: 'transparent', border: '1px solid ' + P.border, color: tagMap.size > 0 ? P.text : P.dim, padding: '4px 10px', borderRadius: 6, cursor: tagMap.size > 0 ? 'pointer' : 'default', fontSize: 12, opacity: tagMap.size > 0 ? 1 : 0.5 }}>
@@ -2098,6 +2197,82 @@ function App() {
                 <div style={{ fontFamily: mono, fontSize: 11, color: P.dim }}>{exportProgress.done.toLocaleString()} / {exportProgress.total.toLocaleString()}</div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Sync Tags Modal ── */}
+      {showSyncTags && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+          onClick={e => { if (e.target === e.currentTarget) closeSyncModal(); }}>
+          <div style={{ background: P.surface, border: '1px solid ' + P.border, borderRadius: 10, padding: 24, width: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            {/* Title */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <span style={{ fontWeight: 700, fontSize: 16, color: P.text }}>Sync Tags from DAT Column</span>
+              <button onClick={closeSyncModal} style={{ background: 'transparent', border: 'none', color: P.dim, cursor: 'pointer', fontSize: 16 }}>✕</button>
+            </div>
+
+            {/* Column selector */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 11, color: P.dim, display: 'block', marginBottom: 4, fontFamily: mono }}>Select column</label>
+              <select value={syncCol || ''} onChange={e => { const idx = parseInt(e.target.value, 10); setSyncCol(idx); scanColumnValues(idx); }}
+                style={{ width: '100%', background: P.bg, border: '1px solid ' + P.border, color: P.text, borderRadius: 4, padding: '6px 10px', fontFamily: mono, fontSize: 12, outline: 'none' }}>
+                <option value="">— Choose a column —</option>
+                {headers.slice(1).map((h, i) => <option key={i + 1} value={i + 1}>{h}</option>)}
+              </select>
+            </div>
+
+            {/* Body */}
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+              {syncTooMany && (
+                <div style={{ padding: '20px 0', textAlign: 'center', color: P.orange, fontFamily: mono, fontSize: 12 }}>
+                  This field has too many unique values (20+) to map.<br />Please select a different column.
+                </div>
+              )}
+              {syncCol === null && !syncTooMany && (
+                <div style={{ padding: '20px 0', textAlign: 'center', color: P.dim, fontFamily: mono, fontSize: 12 }}>
+                  Select a DAT column above to see its values.
+                </div>
+              )}
+              {syncValues && syncValues.length === 0 && !syncTooMany && (
+                <div style={{ padding: '20px 0', textAlign: 'center', color: P.orange, fontFamily: mono, fontSize: 12 }}>
+                  This column has no non-blank values to map.
+                </div>
+              )}
+              {syncValues && syncValues.length > 0 && (
+                <div>
+                  {/* List header */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', borderBottom: '2px solid ' + P.border, fontFamily: mono, fontSize: 10, color: P.dim }}>
+                    <span style={{ flex: 1 }}>Value</span>
+                    <span style={{ minWidth: 44, textAlign: 'right' }}>Count</span>
+                    <span style={{ minWidth: 116, textAlign: 'center' }}>Mapping</span>
+                  </div>
+                  {syncValues.map(({ value, displayValue, count }) => {
+                    const current = syncMappings[value];
+                    return (
+                      <div key={value} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid ' + P.border }}>
+                        <span style={{ flex: 1, fontFamily: mono, fontSize: 12, color: P.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayValue}</span>
+                        <span style={{ fontFamily: mono, fontSize: 10, color: P.dim, minWidth: 44, textAlign: 'right' }}>{count.toLocaleString()}</span>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <MappingBtn label="—" active={!current} color={P.dim} onClick={() => setSyncMappings(prev => { const n = { ...prev }; delete n[value]; return n; })} />
+                          <MappingBtn label="R" active={current === 'responsive'} color={P.green} onClick={() => setSyncMappings(prev => ({ ...prev, [value]: 'responsive' }))} />
+                          <MappingBtn label="NR" active={current === 'not_responsive'} color={P.red} onClick={() => setSyncMappings(prev => ({ ...prev, [value]: 'not_responsive' }))} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, paddingTop: 12, borderTop: '1px solid ' + P.border }}>
+              <button onClick={closeSyncModal} style={{ background: 'transparent', border: '1px solid ' + P.border, color: P.dim, padding: '6px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+              <button onClick={handleSyncClick} disabled={Object.keys(syncMappings).length === 0}
+                style={{ background: Object.keys(syncMappings).length > 0 ? P.accent : P.border, border: 'none', color: Object.keys(syncMappings).length > 0 ? '#fff' : P.dim, padding: '6px 20px', borderRadius: 6, cursor: Object.keys(syncMappings).length > 0 ? 'pointer' : 'default', fontSize: 12, fontWeight: 600 }}>
+                Sync
+              </button>
+            </div>
           </div>
         </div>
       )}
