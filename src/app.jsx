@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.8.4 · 2026-03-27';
+const APP_VERSION = 'v1.8.5 · 2026-03-27';
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -1002,15 +1002,64 @@ function App() {
 
   const handleJump = React.useCallback(input => {
     if (!input) return;
+
+    // 1. Row number (pure integer)
     const rowNum = parseInt(input, 10);
-    if (!isNaN(rowNum) && rowNum >= 1 && rowNum <= filteredRows.length) { selectDoc(filteredRows[rowNum - 1].docId); return; }
-    const upper = input.toUpperCase();
+    if (!isNaN(rowNum) && rowNum >= 1 && rowNum <= filteredRows.length && String(rowNum) === input.trim()) {
+      selectDoc(filteredRows[rowNum - 1].docId); return;
+    }
+
+    const upper = input.toUpperCase().trim();
+
+    // 2. Exact doc ID match
     const exact = filteredRows.find(r => r.docId.toUpperCase() === upper);
     if (exact) { selectDoc(exact.docId); return; }
+
+    // 3. Range-aware Bates lookup:
+    //    Extract prefix + numeric suffix from input (e.g. "ABC00003639" → prefix="ABC", num=3639)
+    //    Then find the doc whose Bates range contains that number.
+    //    Range: from docId's number up to (next docId's number - 1), using page count as span.
+    const inputMatch = upper.match(/^(.*?)(\d+)$/);
+    if (inputMatch) {
+      const inputPrefix = inputMatch[1];
+      const inputNum    = parseInt(inputMatch[2], 10);
+      const padLen      = inputMatch[2].length;
+
+      // Parse all rows that share the same prefix
+      const parsed = filteredRows.map((r, idx) => {
+        const m = r.docId.toUpperCase().match(/^(.*?)(\d+)$/);
+        if (!m || m[1] !== inputPrefix) return null;
+        return { idx, docId: r.docId, num: parseInt(m[2], 10), pages: r.pages.length };
+      }).filter(Boolean).sort((a, b) => a.num - b.num);
+
+      if (parsed.length > 0) {
+        // Find the doc whose range [num, num + pages - 1] contains inputNum
+        for (let i = 0; i < parsed.length; i++) {
+          const start = parsed[i].num;
+          // End of range: either start + pages - 1, or next doc start - 1 (whichever is smaller)
+          const naturalEnd = start + parsed[i].pages - 1;
+          const nextStart  = i + 1 < parsed.length ? parsed[i + 1].num - 1 : Infinity;
+          const end = Math.min(naturalEnd, nextStart);
+          if (inputNum >= start && inputNum <= end) {
+            selectDoc(parsed[i].docId); return;
+          }
+        }
+        // If no range matched, find the closest doc below the input number
+        const below = parsed.filter(p => p.num <= inputNum);
+        if (below.length > 0) { selectDoc(below[below.length - 1].docId); return; }
+        // Else jump to first doc in that prefix group
+        selectDoc(parsed[0].docId); return;
+      }
+    }
+
+    // 4. Starts-with partial match
     const partial = filteredRows.find(r => r.docId.toUpperCase().startsWith(upper));
     if (partial) { selectDoc(partial.docId); return; }
+
+    // 5. Contains match
     const contains = filteredRows.find(r => r.docId.toUpperCase().includes(upper));
     if (contains) { selectDoc(contains.docId); return; }
+
     showNotice('warn', 'No match found for: ' + input);
   }, [filteredRows, selectDoc, showNotice]);
 
@@ -1846,7 +1895,7 @@ function App() {
         {showJump && (
           <input autoFocus value={jumpInput} onChange={e => setJumpInput(e.target.value)}
             onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { handleJump(jumpInput.trim()); setJumpInput(''); setShowJump(false); } if (e.key === 'Escape') { setShowJump(false); setJumpInput(''); } }}
-            placeholder="Bates # or row #"
+            placeholder="Doc ID or row #"
             style={{ background: P.bg, border: '1px solid ' + P.accent, color: P.text, borderRadius: 4, padding: '4px 8px', fontFamily: mono, fontSize: 11, outline: 'none', width: 140 }} />
         )}
         {/* Sync Tags */}
