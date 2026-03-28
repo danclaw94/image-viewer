@@ -21,7 +21,11 @@
 </head>
 <body>
   <div id="root"></div>
-  <script>const APP_VERSION = 'v1.8.5 · 2026-03-27';
+  <script>const APP_VERSION = 'v1.8.6 · 2026-03-27';
+
+// ── Pop-out detection ──────────────────────────────────────────────────────
+const IS_POPOUT = new URLSearchParams(window.location.search).has('popout');
+const CHANNEL = new BroadcastChannel('vdiscovery-image-viewer');
 
 // ── OPT parser ───────────────────────────────────────────────────────────────
 function parseOpt(text) {
@@ -561,6 +565,200 @@ function ThumbnailStrip({
 }
 
 // ── ResizableTh ───────────────────────────────────────────────────────────
+// ── PopoutViewer — standalone image panel for the detached window ─────────
+function PopoutViewer() {
+  const [state, setState] = React.useState({
+    selDocId: null,
+    selPage: 0,
+    zoom: 'fit-page',
+    rotation: 0,
+    imgSrc: null,
+    imgLoading: false
+  });
+  React.useEffect(() => {
+    const handler = e => {
+      if (e.data.type === 'nav') setState(e.data);
+    };
+    CHANNEL.addEventListener('message', handler);
+    // Tell main we're ready
+    CHANNEL.postMessage({
+      type: 'popout_ready'
+    });
+    return () => CHANNEL.removeEventListener('message', handler);
+  }, []);
+
+  // Forward keyboard events to main window
+  React.useEffect(() => {
+    const handler = e => {
+      if (e.target.tagName === 'INPUT') return;
+      const map = {
+        ArrowRight: 'next_page',
+        ArrowDown: 'next_page',
+        ArrowLeft: 'prev_page',
+        ArrowUp: 'prev_page'
+      };
+      if (map[e.key]) {
+        e.preventDefault();
+        CHANNEL.postMessage({
+          type: 'cmd',
+          cmd: map[e.key]
+        });
+      }
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        CHANNEL.postMessage({
+          type: 'cmd',
+          cmd: 'tag_r'
+        });
+      }
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        CHANNEL.postMessage({
+          type: 'cmd',
+          cmd: 'tag_nr'
+        });
+      }
+      if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        CHANNEL.postMessage({
+          type: 'cmd',
+          cmd: 'tag_u'
+        });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+  const {
+    selDocId,
+    selPage,
+    zoom,
+    rotation,
+    imgSrc,
+    imgLoading
+  } = state;
+  const isRotated90 = rotation === 90 || rotation === 270;
+  const btn = (label, cmd, active) => React.createElement('button', {
+    onClick: () => CHANNEL.postMessage({
+      type: 'cmd',
+      cmd
+    }),
+    style: {
+      background: active ? P.accentGlow : 'transparent',
+      border: '1px solid ' + (active ? P.accent : P.border),
+      color: active ? P.accent : P.dim,
+      borderRadius: 4,
+      padding: '3px 8px',
+      cursor: 'pointer',
+      fontSize: 11
+    }
+  }, label);
+  return React.createElement('div', {
+    style: {
+      height: '100vh',
+      background: P.bg,
+      display: 'flex',
+      flexDirection: 'column',
+      fontFamily: sans,
+      color: P.text,
+      overflow: 'hidden'
+    }
+  },
+  // Toolbar
+  React.createElement('div', {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 7,
+      padding: '6px 12px',
+      borderBottom: '1px solid ' + P.border,
+      background: P.surface,
+      flexShrink: 0,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement('a', {
+    href: 'https://vdiscovery.com',
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    style: {
+      lineHeight: 0
+    }
+  }, React.createElement('img', {
+    src: 'v-outline.png',
+    alt: 'vDiscovery',
+    style: {
+      height: 22
+    }
+  })), React.createElement('span', {
+    style: {
+      fontFamily: mono,
+      fontSize: 12,
+      color: P.accent,
+      fontWeight: 600
+    }
+  }, selDocId || '—'), React.createElement('div', {
+    style: {
+      flex: 1
+    }
+  }), btn('‹', 'prev_page'), btn('›', 'next_page'), btn('↑ Doc', 'prev_doc'), btn('↓ Doc', 'next_doc'), React.createElement('span', {
+    style: {
+      fontFamily: mono,
+      fontSize: 10,
+      color: P.dim
+    }
+  }, 'p.' + (selPage + 1)), btn('−', 'zoom_out'), btn('+', 'zoom_in'), btn('fit page', 'fit_page', zoom === 'fit-page'), btn('fit width', 'fit_width', zoom === 'fit-width'), btn('↻ Rotate', 'rotate', rotation > 0), btn('R', 'tag_r'), btn('NR', 'tag_nr'), btn('U', 'tag_u')),
+  // Image area
+  React.createElement('div', {
+    style: {
+      flex: 1,
+      overflow: 'auto',
+      display: 'flex',
+      alignItems: zoom === 'fit-page' ? 'center' : 'flex-start',
+      justifyContent: 'center',
+      padding: zoom === 'fit-page' ? 8 : 16,
+      background: '#080C10'
+    }
+  }, imgLoading && React.createElement('div', {
+    style: {
+      color: P.dim,
+      fontFamily: mono,
+      fontSize: 12
+    }
+  }, 'Loading…'), !imgLoading && !selDocId && React.createElement('div', {
+    style: {
+      color: P.dim,
+      fontFamily: mono,
+      fontSize: 13,
+      marginTop: 80,
+      textAlign: 'center'
+    }
+  }, 'Waiting for main window…\nSelect a document there to display it here.'), imgSrc && React.createElement('img', {
+    src: imgSrc,
+    alt: selDocId || '',
+    style: {
+      display: 'block',
+      boxShadow: '0 4px 30px rgba(0,0,0,0.6)',
+      maxWidth: zoom === 'fit-page' || zoom === 'fit-width' ? '100%' : 'none',
+      maxHeight: zoom === 'fit-page' ? isRotated90 ? '100vw' : '100%' : 'none',
+      width: typeof zoom === 'number' ? zoom * 100 + '%' : undefined,
+      height: 'auto',
+      opacity: imgLoading ? 0.4 : 1,
+      transition: 'opacity 0.1s',
+      transform: rotation > 0 ? 'rotate(' + rotation + 'deg)' : undefined,
+      transformOrigin: 'center center'
+    }
+  })), React.createElement('div', {
+    style: {
+      position: 'fixed',
+      bottom: 8,
+      right: 12,
+      fontFamily: 'monospace',
+      fontSize: 10,
+      color: '#30363d',
+      pointerEvents: 'none'
+    }
+  }, APP_VERSION));
+}
 function ResizableTh({
   colKey,
   width,
@@ -1179,6 +1377,8 @@ function App() {
   const imgAreaRef = React.useRef(null);
   const fileIndexRef = React.useRef({});
   const sessionFileRef = React.useRef(null);
+  const popoutWinRef = React.useRef(null);
+  const [isPopped, setIsPopped] = React.useState(false); // main window has popped out image
   fileIndexRef.current = fileIndex;
 
   // Resume info from previous session
@@ -1593,6 +1793,92 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [selDocId, selPage, filteredRows, totalPages, selIdx, tagMap, setTag]);
+
+  // ── Broadcast navigation to pop-out window ──
+  React.useEffect(() => {
+    if (!isPopped) return;
+    CHANNEL.postMessage({
+      type: 'nav',
+      selDocId,
+      selPage,
+      zoom,
+      rotation,
+      imgSrc,
+      imgLoading
+    });
+  }, [selDocId, selPage, zoom, rotation, imgSrc, imgLoading, isPopped]);
+
+  // ── Receive nav commands from pop-out (arrow keys driven there) ──
+  React.useEffect(() => {
+    const handler = e => {
+      if (e.data.type === 'cmd') {
+        const {
+          cmd
+        } = e.data;
+        if (cmd === 'next_page') setSelPage(p => Math.min(selRow ? selRow.pages.length - 1 : 0, p + 1));
+        if (cmd === 'prev_page') setSelPage(p => Math.max(0, p - 1));
+        if (cmd === 'next_doc') {
+          const idx = filteredRows.findIndex(r => r.docId === selDocId);
+          if (idx >= 0 && idx < filteredRows.length - 1) {
+            setSelDocId(filteredRows[idx + 1].docId);
+            setSelPage(0);
+          }
+        }
+        if (cmd === 'prev_doc') {
+          const idx = filteredRows.findIndex(r => r.docId === selDocId);
+          if (idx > 0) {
+            setSelDocId(filteredRows[idx - 1].docId);
+            setSelPage(0);
+          }
+        }
+        if (cmd === 'zoom_in') setZoom(z => Math.min(4, (typeof z === 'number' ? z : 1) + 0.25));
+        if (cmd === 'zoom_out') setZoom(z => Math.max(0.25, (typeof z === 'number' ? z : 1) - 0.25));
+        if (cmd === 'fit_page') setZoom('fit-page');
+        if (cmd === 'fit_width') setZoom('fit-width');
+        if (cmd === 'rotate') setRotation(r => (r + 90) % 360);
+        if (cmd === 'tag_r') setTag(selDocId, tagMap.get(selDocId) === 'responsive' ? null : 'responsive');
+        if (cmd === 'tag_nr') setTag(selDocId, tagMap.get(selDocId) === 'not_responsive' ? null : 'not_responsive');
+        if (cmd === 'tag_u') setTag(selDocId, null);
+      }
+    };
+    CHANNEL.addEventListener('message', handler);
+    return () => CHANNEL.removeEventListener('message', handler);
+  }, [selDocId, selRow, filteredRows, tagMap, setTag]);
+
+  // ── Heartbeat — detect when pop-out closes ──
+  React.useEffect(() => {
+    if (!isPopped) return;
+    const t = setInterval(() => {
+      if (popoutWinRef.current && popoutWinRef.current.closed) {
+        popoutWinRef.current = null;
+        setIsPopped(false);
+        showNotice('ok', 'Image viewer returned to main window', 3000);
+      }
+    }, 800);
+    return () => clearInterval(t);
+  }, [isPopped, showNotice]);
+
+  // ── Pop-out launcher ──
+  const openPopout = React.useCallback(() => {
+    const url = window.location.href.split('?')[0] + '?popout=1';
+    const w = window.open(url, 'vd-image-viewer', 'width=900,height=700,menubar=no,toolbar=no,location=no,status=no');
+    if (w) {
+      popoutWinRef.current = w;
+      setIsPopped(true);
+      // Send initial state after pop-out loads
+      setTimeout(() => {
+        CHANNEL.postMessage({
+          type: 'nav',
+          selDocId,
+          selPage,
+          zoom,
+          rotation,
+          imgSrc,
+          imgLoading
+        });
+      }, 800);
+    }
+  }, [selDocId, selPage, zoom, rotation, imgSrc, imgLoading]);
 
   // Reset copied on doc change
   React.useEffect(() => {
@@ -2978,8 +3264,8 @@ function App() {
       }
     }, "\uD83D\uDD12 100% local \u2014 files never leave your browser"));
   }
-  const GRID_W = selDocId ? '55%' : '100%';
-  const IMG_W = selDocId ? '45%' : '0';
+  const GRID_W = selDocId && !isPopped ? '55%' : '100%';
+  const IMG_W = selDocId && !isPopped ? '45%' : '0';
   const isRotated90 = rotation === 90 || rotation === 270;
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3800,7 +4086,34 @@ function App() {
     style: {
       position: 'relative'
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, !isPopped ? /*#__PURE__*/React.createElement("button", {
+    onClick: openPopout,
+    title: "Pop out image to separate window",
+    style: {
+      background: 'transparent',
+      border: '1px solid ' + P.border,
+      color: P.dim,
+      borderRadius: 4,
+      padding: '2px 7px',
+      cursor: 'pointer',
+      fontSize: 11
+    }
+  }, "\u29C9") : /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (popoutWinRef.current && !popoutWinRef.current.closed) popoutWinRef.current.close();
+      setIsPopped(false);
+    },
+    title: "Close pop-out and return image here",
+    style: {
+      background: P.accentGlow,
+      border: '1px solid ' + P.accent,
+      color: P.accent,
+      borderRadius: 4,
+      padding: '2px 7px',
+      cursor: 'pointer',
+      fontSize: 11
+    }
+  }, "\u29C9 \u2715"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setPrintMenu(v => !v),
     style: {
       background: 'transparent',
@@ -4763,6 +5076,6 @@ function VersionBadge() {
   }, APP_VERSION);
 }
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(React.Fragment, null, React.createElement(App, null), React.createElement(VersionBadge, null)));</script>
+root.render(IS_POPOUT ? React.createElement(PopoutViewer, null) : React.createElement(React.Fragment, null, React.createElement(App, null), React.createElement(VersionBadge, null)));</script>
 </body>
 </html>
